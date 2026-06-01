@@ -11,6 +11,7 @@ Token使用量统计和成本计算模块
 import os
 import json
 import time
+import contextvars
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, asdict
 from datetime import datetime
@@ -372,6 +373,48 @@ class TokenUsageTracker:
             json.dump(export_data, f, ensure_ascii=False, indent=2)
         
         print(f"✅ 会话记录已导出到: {output_file}")
+
+
+# ---------------------------------------------------------------------------
+# 全局 Task-Level Token 文件路由（基于 contextvars）
+# ---------------------------------------------------------------------------
+
+_global_token_file: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    "_global_token_file", default=None
+)
+_global_task_context: contextvars.ContextVar[Optional[Dict[str, Any]]] = contextvars.ContextVar(
+    "_global_task_context", default=None
+)
+
+
+def set_global_task_token_file(file_path: str) -> None:
+    """设置当前异步上下文的全局 token 日志文件路径"""
+    _global_token_file.set(file_path)
+
+
+def get_global_task_token_file() -> Optional[str]:
+    """获取当前异步上下文的全局 token 日志文件路径"""
+    return _global_token_file.get()
+
+
+def clear_global_task_token_file() -> None:
+    """清除当前异步上下文的全局 token 日志文件路径"""
+    _global_token_file.set(None)
+
+
+def set_global_task_context(**kwargs: Any) -> None:
+    """设置当前异步上下文的全局任务上下文（如 task_id, user_id）"""
+    _global_task_context.set(dict(kwargs))
+
+
+def get_global_task_context() -> Optional[Dict[str, Any]]:
+    """获取当前异步上下文的全局任务上下文"""
+    return _global_task_context.get()
+
+
+def clear_global_task_context() -> None:
+    """清除当前异步上下文的全局任务上下文"""
+    _global_task_context.set(None)
 
 
 if __name__ == "__main__":

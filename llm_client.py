@@ -8,9 +8,10 @@ LLM客户端基类
 """
 
 import asyncio
+import json
 import uuid
 from datetime import datetime
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple, Dict, Any, Union, List, AsyncGenerator
 from dataclasses import dataclass
 
 # 尝试导入OpenAI库
@@ -22,7 +23,7 @@ except ImportError:
     openai_available = False
 
 from .llm_runtime_config import LLMRuntimeConfig, overlay_runtime_config, resolve_runtime_config, get_default_api
-from .token_usage_tracker import TokenUsageTracker, TokenUsage
+from .token_usage_tracker import TokenUsageTracker, TokenUsage, get_global_task_token_file
 
 
 @dataclass
@@ -149,8 +150,13 @@ class LLMClient:
         # 初始化追踪器
         self.enable_tracking = enable_tracking
         if self.enable_tracking:
-            default_log_file = runtime_config.log_file or f"logs/llm_activity_{self.api_name}.jsonl"
-            self.tracker = TokenUsageTracker(log_file=default_log_file)
+            global_token_file = get_global_task_token_file()
+            effective_log_file = (
+                runtime_config.log_file
+                or global_token_file
+                or f"logs/llm_activity_{self.api_name}.jsonl"
+            )
+            self.tracker = TokenUsageTracker(log_file=effective_log_file)
         else:
             self.tracker = None
         
@@ -165,6 +171,16 @@ class LLMClient:
     def from_profile(cls, profile_name: str, **kwargs) -> "LLMClient":
         """Create a client from a runtime profile name."""
         return cls(api_name=profile_name, **kwargs)
+
+    @classmethod
+    def from_stage(cls, stage_name: str, fallback_api: Optional[str] = None, **kwargs) -> "LLMClient":
+        """根据 stage routing 配置创建客户端"""
+        from .stage_routing import get_route_for_stage
+        route = get_route_for_stage(stage_name, default=fallback_api)
+        api_name = route.get("api_name") or fallback_api
+        model = route.get("model")
+        temperature = route.get("temperature")
+        return cls(api_name=api_name, model=model, temperature=temperature, **kwargs)
     
     def _generate_call_id(self) -> str:
         """生成唯一的调用ID（16位哈希）
@@ -409,6 +425,7 @@ class LLMClient:
         stage: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
         max_tokens: Optional[int] = None,
+        system_prompt: Optional[str] = None,
     ) -> LLMResponse:
         """
         获取LLM完成结果（核心方法）
@@ -474,9 +491,13 @@ class LLMClient:
                     response = await self.client.responses.create(**create_kwargs)
                     content = getattr(response, "output_text", "") or ""
                 else:
+                    messages = []
+                    if system_prompt:
+                        messages.append({"role": "system", "content": system_prompt})
+                    messages.append({"role": "user", "content": prompt})
                     create_kwargs = {
                         "model": model_name,
-                        "messages": [{"role": "user", "content": prompt}],
+                        "messages": messages,
                         "temperature": temperature_effective,
                     }
                     if max_tokens is not None:
@@ -644,6 +665,184 @@ class LLMClient:
             duration_ms=duration_ms
         )
     
+    async def get_json_completion(
+        self,
+        prompt: str,
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        stage: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        max_tokens: Optional[int] = None,
+    ) -> Optional[Union[Dict[str, Any], List[Any]]]:
+        """
+        获取JSON格式的LLM完成结果
+
+        内部调用 get_completion()，然后使用 extract_and_repair_json() 解析响应。
+        三级解析策略：直接解析 → json5宽容解析 → json_repair修复。
+
+        Args:
+            prompt: 提示词
+            model: 模型名称
+            temperature: 温度参数
+            stage: 阶段名称（用于元数据标注）
+            metadata: 额外元数据
+            max_tokens: 最大输出 token 数
+
+        Returns:
+            解析后的JSON对象（Dict或List），解析失败返回None
+        """
+        from .prompt_utils import extract_and_repair_json
+
+        response = await self.get_completion(
+            prompt=prompt,
+            model=model,
+            temperature=temperature,
+            stage=stage,
+            metadata=metadata,
+            max_tokens=max_tokens,
+        )
+
+        if not response.success:
+            print(f"[{response.call_id}] get_json_completion: LLM调用失败 - {response.error}")
+            return None
+
+        try:
+            return extract_and_repair_json(response.content)
+        except (ValueError, json.JSONDecodeError) as e:
+            print(f"[{response.call_id}] get_json_completion: JSON解析失败 - {e}")
+            return None
+
+    async def get_streaming_completion(
+        self,
+        prompt: Optional[str] = None,
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        stage: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        max_tokens: Optional[int] = None,
+        messages: Optional[List[Dict[str, str]]] = None,
+    ) -> AsyncGenerator[str, None]:
+        """
+        流式获取LLM完成结果
+
+        逐 chunk yield delta content。流结束后自动记录 token usage 和成本。
+
+        Args:
+            prompt: 提示词（与 messages 二选一）
+            model: 模型名称
+            temperature: 温度参数
+            stage: 阶段名称
+            metadata: 额外元数据
+            max_tokens: 最大输出 token 数
+            messages: OpenAI messages 数组（优先于 prompt）
+
+        Yields:
+            每个 chunk 的文本片段
+        """
+        if self.protocol != "openai_chat":
+            raise ValueError(f"Streaming 仅支持 openai_chat 协议，当前: {self.protocol}")
+
+        if messages is None and prompt is None:
+            raise ValueError("prompt 和 messages 至少提供一个")
+
+        call_id = self._generate_call_id()
+        timestamp_start = self._get_current_timestamp()
+        start_time = asyncio.get_event_loop().time()
+
+        model_name = model or self.default_model
+        temperature_effective = (
+            temperature if temperature is not None else self.default_temperature
+        )
+
+        prompt_for_log = prompt or (messages[-1]["content"][:200] if messages else "")
+
+        call_record: Dict[str, Any] = {
+            "call_id": call_id,
+            "timestamp_start": timestamp_start,
+            "api_name": self.api_name,
+            "provider": self.provider,
+            "family": self.family,
+            "protocol": self.protocol,
+            "model": model_name,
+            "temperature": temperature_effective,
+            "prompt": prompt_for_log,
+            "prompt_length": len(prompt_for_log),
+            "stage": stage,
+            "streaming": True,
+        }
+        if metadata:
+            call_record["metadata"] = metadata
+
+        final_messages = messages if messages else [{"role": "user", "content": prompt}]
+
+        create_kwargs: Dict[str, Any] = {
+            "model": model_name,
+            "messages": final_messages,
+            "temperature": temperature_effective,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        if max_tokens is not None:
+            create_kwargs["max_tokens"] = max_tokens
+
+        full_content = []
+        usage = None
+        error_msg = None
+
+        try:
+            stream = await self.client.chat.completions.create(**create_kwargs)
+
+            async for chunk in stream:
+                if chunk.choices:
+                    delta = chunk.choices[0].delta
+                    if delta and delta.content:
+                        full_content.append(delta.content)
+                        yield delta.content
+
+                if hasattr(chunk, 'usage') and chunk.usage:
+                    prompt_tokens = getattr(chunk.usage, "prompt_tokens", 0) or 0
+                    completion_tokens = getattr(chunk.usage, "completion_tokens", 0) or 0
+                    total_tokens = getattr(chunk.usage, "total_tokens", prompt_tokens + completion_tokens)
+                    usage = TokenUsage(
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                        total_tokens=total_tokens,
+                        prompt_cache_hit_tokens=getattr(chunk.usage, "prompt_cache_hit_tokens", 0) or 0,
+                        prompt_cache_miss_tokens=getattr(chunk.usage, "prompt_cache_miss_tokens", 0) or 0,
+                    )
+
+        except Exception as e:
+            error_msg = f"Streaming错误: {e}"
+            print(f"[{call_id}] {error_msg}")
+
+        end_time = asyncio.get_event_loop().time()
+        duration_ms = int((end_time - start_time) * 1000)
+        content_str = "".join(full_content)
+
+        cost = None
+        if usage and self.tracker:
+            cost = self.tracker.pricing_config.calculate_cost(
+                usage=usage, model_name=model_name, provider=self.provider
+            )
+
+        call_record.update({
+            "timestamp_end": self._get_current_timestamp(),
+            "duration_ms": duration_ms,
+            "status": "success" if not error_msg else "failure",
+            "response": content_str,
+            "response_length": len(content_str),
+            "usage": usage.__dict__ if usage else None,
+            "cost": cost,
+            "error": error_msg,
+            "retry_count": 0,
+        })
+
+        if self.tracker:
+            self.tracker.log_call_record(call_record)
+
+        if not error_msg:
+            print(f"[{call_id}] Streaming完成 ({duration_ms}ms, {len(content_str)} chars)")
+
     def get_session_summary(self) -> Dict[str, Any]:
         """
         获取当前会话的统计摘要

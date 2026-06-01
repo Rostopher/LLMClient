@@ -44,3 +44,38 @@ apis:
     temperature: 0.7
     max_retries: 5
     retry_base_delay: 1
+
+# Stage → API/Model/Temperature 路由映射
+stage_routing:
+  metadata_extraction:
+    api: deepseek_official_flash
+    model: deepseek-v4-flash
+    temperature: 0
+  attribute_tree:
+    api: deepseek_official_flash
+    model: deepseek-v4-flash
+    temperature: 0.7
+  section_detection:
+    api: deepseek_official_flash
+    model: deepseek-v4-flash
+    temperature: 0
+  paper_structure:
+    api: deepseek_official_flash
+    model: deepseek-v4-flash
+    temperature: 0
+  summary_report_generation:
+    api: deepseek_official_chat
+    model: deepseek-v4-pro
+    temperature: 0.7
+  deep_report_generation:
+    api: deepseek_official_chat
+    model: deepseek-v4-pro
+    temperature: 0.7
+  translation:
+    api: deepseek_official_flash
+    model: deepseek-v4-flash
+    temperature: 0.3
+  chat_interaction:
+    api: deepseek_official_chat
+    model: deepseek-v4-pro
+    temperature: 0.7
