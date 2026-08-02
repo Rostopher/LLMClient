@@ -63,6 +63,11 @@ from .llm_client import (
     LLMResponse,
 )
 
+from .llm_error_classifier import (
+    LLMErrorClassification,
+    classify_llm_error,
+)
+
 from .anthropic_client import (
     AnthropicLLMClient,
     AnthropicLLMResponse,
@@ -146,14 +151,40 @@ def create_llm_client(
     if log_file is None:
         log_file = get_global_task_token_file()
 
-    return LLMClient(
-        api_name=effective_api,
-        log_file=log_file,
-        enable_tracking=enable_tracking,
-        model=route_model,
-        temperature=route_temp,
-        **kwargs,
-    )
+    try:
+        return LLMClient(
+            api_name=effective_api,
+            log_file=log_file,
+            enable_tracking=enable_tracking,
+            model=route_model,
+            temperature=route_temp,
+            **kwargs,
+        )
+    except ValueError as error:
+        # 启动时缺少 Go API key 也属于认证配置错误：明确打印 fallback，
+        # 但不吞掉参数/协议/未知 profile 等其他 ValueError。
+        classification = classify_llm_error(error)
+        fallback_profile = LLMClient._API_KEY_FALLBACK_PROFILES.get(effective_api)
+        if not (classification.fallback_eligible and fallback_profile):
+            raise
+
+        print(
+            f"[{effective_api}] 检测到 {classification.kind}，"
+            f"初始化时切换官方 DeepSeek profile: {fallback_profile}"
+        )
+        safe_fallback_kwargs = {
+            key: value
+            for key, value in kwargs.items()
+            if key in {"max_retries", "retry_base_delay", "max_concurrent", "config_file", "env_file"}
+        }
+        return LLMClient(
+            api_name=fallback_profile,
+            log_file=log_file,
+            enable_tracking=enable_tracking,
+            model=route_model,
+            temperature=route_temp,
+            **safe_fallback_kwargs,
+        )
 
 
 __all__ = [
@@ -183,6 +214,8 @@ __all__ = [
     # 客户端
     "LLMClient",
     "LLMResponse",
+    "LLMErrorClassification",
+    "classify_llm_error",
     "AnthropicLLMClient",
     "AnthropicLLMResponse",
     "StructuredLLMClient",

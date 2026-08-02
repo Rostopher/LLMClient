@@ -23,6 +23,7 @@ except ImportError:
     openai_available = False
 
 from .llm_runtime_config import LLMRuntimeConfig, overlay_runtime_config, resolve_runtime_config, get_default_api
+from .llm_error_classifier import LLMErrorClassification, classify_llm_error
 from .token_usage_tracker import TokenUsageTracker, TokenUsage, get_global_task_token_file
 
 
@@ -36,6 +37,10 @@ class LLMResponse:
     error: Optional[str] = None
     call_id: Optional[str] = None
     duration_ms: Optional[int] = None
+    error_classification: Optional[Dict[str, Any]] = None
+    fallback_used: bool = False
+    fallback_from: Optional[str] = None
+    fallback_reason: Optional[str] = None
 
 
 class LLMClient:
@@ -50,6 +55,13 @@ class LLMClient:
     - 空响应检测
     - 支持多供应商配置
     """
+
+    # 只有 OpenCode Go 的 API-key/auth 错误切换到官方 DeepSeek；配额、限流、
+    # 连接和服务端错误不会静默改走另一家供应商。
+    _API_KEY_FALLBACK_PROFILES = {
+        "opencode_go_deepseek_pro": "deepseek_official_chat",
+        "opencode_go_deepseek_flash": "deepseek_official_flash",
+    }
     
     def __init__(
         self, 
@@ -193,6 +205,169 @@ class LLMClient:
     def _get_current_timestamp(self) -> str:
         """获取当前时间戳（ISO 8601格式）"""
         return datetime.utcnow().isoformat() + 'Z'
+
+    def _fallback_profile_for_error(self, classification: LLMErrorClassification) -> Optional[str]:
+        """返回当前 profile 对应的官方 fallback；非认证错误返回 None。"""
+        if not classification.fallback_eligible:
+            return None
+        return self._API_KEY_FALLBACK_PROFILES.get(self.api_name)
+
+    def _fallback_log_file(self) -> Optional[str]:
+        if self.tracker:
+            return self.tracker.log_file
+        return self.runtime_config.log_file
+
+    def _build_fallback_client(self, profile_name: str) -> "LLMClient":
+        """创建官方 profile 客户端，不继承 OpenCode 的 endpoint/key。"""
+        return LLMClient.from_profile(
+            profile_name,
+            log_file=self._fallback_log_file(),
+            enable_tracking=self.enable_tracking,
+            max_retries=self.max_retries,
+            retry_base_delay=self.retry_base_delay,
+        )
+
+    def _record_fallback_event(
+        self,
+        call_record: Dict[str, Any],
+        classification: LLMErrorClassification,
+        fallback_profile: str,
+        retries: int,
+        start_time: float,
+    ) -> None:
+        """记录原供应商失败及 fallback 决策，避免 fallback 变成不可见的旁路。"""
+        duration_ms = int((asyncio.get_event_loop().time() - start_time) * 1000)
+        call_record.update({
+            "timestamp_end": self._get_current_timestamp(),
+            "duration_ms": duration_ms,
+            "status": "fallback",
+            "response": None,
+            "response_length": 0,
+            "usage": None,
+            "cost": None,
+            "error": f"{classification.kind}: {classification.message}",
+            "error_classification": classification.to_dict(),
+            "retry_count": retries,
+            "fallback_used": True,
+            "fallback_to": fallback_profile,
+            "fallback_reason": classification.kind,
+        })
+        if self.tracker:
+            self.tracker.log_call_record(call_record)
+
+    async def _run_completion_fallback(
+        self,
+        classification: LLMErrorClassification,
+        *,
+        prompt: str,
+        model: Optional[str],
+        temperature: Optional[float],
+        stage: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+        max_tokens: Optional[int],
+        system_prompt: Optional[str] = None,
+    ) -> Optional[LLMResponse]:
+        fallback_profile = self._fallback_profile_for_error(classification)
+        if not fallback_profile:
+            return None
+        print(
+            f"[{self.api_name}] 检测到 {classification.kind}，"
+            f"切换官方 DeepSeek profile: {fallback_profile}"
+        )
+        try:
+            fallback_client = self._build_fallback_client(fallback_profile)
+            response = await fallback_client.get_completion(
+                prompt=prompt,
+                model=model,
+                temperature=temperature,
+                stage=stage,
+                metadata=metadata,
+                max_tokens=max_tokens,
+                system_prompt=system_prompt,
+            )
+        except Exception as fallback_error:
+            fallback_classification = classify_llm_error(fallback_error)
+            return LLMResponse(
+                success=False,
+                content="",
+                error=(
+                    f"原供应商 {classification.kind}，fallback {fallback_profile} 初始化/调用失败: "
+                    f"{fallback_classification.kind}: {fallback_classification.message}"
+                ),
+                error_classification=classification.to_dict(),
+                fallback_used=True,
+                fallback_from=self.api_name,
+                fallback_reason=classification.kind,
+            )
+
+        response.fallback_used = True
+        response.fallback_from = self.api_name
+        response.fallback_reason = classification.kind
+        response.error_classification = classification.to_dict()
+        return response
+
+    async def _run_vision_fallback(
+        self,
+        classification: LLMErrorClassification,
+        *,
+        prompt: str,
+        image_base64: str,
+        model: Optional[str],
+        temperature: Optional[float],
+        stage: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+    ) -> Optional[LLMResponse]:
+        fallback_profile = self._fallback_profile_for_error(classification)
+        if not fallback_profile:
+            return None
+        print(
+            f"[{self.api_name}] 检测到 {classification.kind}，"
+            f"切换官方 DeepSeek profile: {fallback_profile}"
+        )
+        try:
+            fallback_client = self._build_fallback_client(fallback_profile)
+            response = await fallback_client.get_vision_completion(
+                prompt=prompt,
+                image_base64=image_base64,
+                model=model,
+                temperature=temperature,
+                stage=stage,
+                metadata=metadata,
+            )
+        except Exception as fallback_error:
+            fallback_classification = classify_llm_error(fallback_error)
+            return LLMResponse(
+                success=False,
+                content="",
+                error=(
+                    f"原供应商 {classification.kind}，fallback {fallback_profile} 初始化/调用失败: "
+                    f"{fallback_classification.kind}: {fallback_classification.message}"
+                ),
+                error_classification=classification.to_dict(),
+                fallback_used=True,
+                fallback_from=self.api_name,
+                fallback_reason=classification.kind,
+            )
+        response.fallback_used = True
+        response.fallback_from = self.api_name
+        response.fallback_reason = classification.kind
+        response.error_classification = classification.to_dict()
+        return response
+
+    def _annotate_stream_fallback_record(
+        self,
+        call_record: Dict[str, Any],
+        classification: LLMErrorClassification,
+        fallback_profile: str,
+        start_time: float,
+    ) -> None:
+        self._record_fallback_event(
+            call_record,
+            classification,
+            fallback_profile,
+            retries=0,
+            start_time=start_time,
+        )
     
     async def get_vision_completion(
         self,
@@ -266,6 +441,7 @@ class LLMClient:
         # 执行调用（带重试机制）
         retries = 0
         last_error = None
+        last_classification: Optional[LLMErrorClassification] = None
         
         while retries <= self.max_retries:
             try:
@@ -288,15 +464,11 @@ class LLMClient:
                     raise ValueError("Empty response from LLM")
                 
                 # 提取Token使用量
-                usage = None
-                if hasattr(response, 'usage') and response.usage:
-                    usage = TokenUsage(
-                        prompt_tokens=response.usage.prompt_tokens,
-                        completion_tokens=response.usage.completion_tokens,
-                        total_tokens=response.usage.total_tokens,
-                        prompt_cache_hit_tokens=getattr(response.usage, "prompt_cache_hit_tokens", 0) or 0,
-                        prompt_cache_miss_tokens=getattr(response.usage, "prompt_cache_miss_tokens", 0) or 0,
-                    )
+                usage = (
+                    TokenUsageTracker.extract_usage_from_response(response)
+                    if hasattr(response, "usage") and response.usage
+                    else None
+                )
                 
                 # 计算成本
                 cost = None
@@ -361,22 +533,31 @@ class LLMClient:
                     print(f"[{call_id}] ❌ 值错误: {e}")
                     break  # 格式错误不重试
                 
-            except APIConnectionError as e:
-                last_error = f"连接错误: {str(e)}"
-                print(f"[{call_id}] ⚠️ API连接失败: {e}")
-                
-            except APIError as e:
-                last_error = f"API错误: {str(e)}"
-                print(f"[{call_id}] ⚠️ API错误: {e}")
-                
-            except asyncio.TimeoutError:
-                last_error = "请求超时"
-                print(f"[{call_id}] ⚠️ 请求超时")
-                
             except Exception as e:
-                last_error = f"未知错误: {str(e)}"
-                print(f"[{call_id}] ❌ 未知错误: {e}")
-                break  # 未知错误不重试
+                classification = classify_llm_error(e)
+                last_classification = classification
+                last_error = f"{classification.kind}: {classification.message}"
+
+                fallback_profile = self._fallback_profile_for_error(classification)
+                if fallback_profile:
+                    fallback_response = await self._run_vision_fallback(
+                        classification,
+                        prompt=prompt,
+                        image_base64=image_base64,
+                        model=model,
+                        temperature=temperature,
+                        stage=stage,
+                        metadata=metadata,
+                    )
+                    self._record_fallback_event(
+                        call_record, classification, fallback_profile, retries, start_time
+                    )
+                    return fallback_response
+
+                level = "⚠️" if classification.retryable else "❌"
+                print(f"[{call_id}] {level} {last_error}")
+                if not classification.retryable:
+                    break
             
             # 重试逻辑
             retries += 1
@@ -399,6 +580,7 @@ class LLMClient:
             "usage": None,
             "cost": None,
             "error": last_error,
+            "error_classification": last_classification.to_dict() if last_classification else None,
             "retry_count": retries
         })
         
@@ -414,7 +596,8 @@ class LLMClient:
             cost=None,
             error=last_error,
             call_id=call_id,
-            duration_ms=duration_ms
+            duration_ms=duration_ms,
+            error_classification=last_classification.to_dict() if last_classification else None,
         )
     
     async def get_completion(
@@ -475,6 +658,7 @@ class LLMClient:
         # 执行调用（带重试机制）
         retries = 0
         last_error = None
+        last_classification: Optional[LLMErrorClassification] = None
         
         while retries <= self.max_retries:
             try:
@@ -515,36 +699,11 @@ class LLMClient:
                     raise ValueError("Empty response from LLM")
                 
                 # 提取Token使用量
-                usage = None
-                if hasattr(response, 'usage') and response.usage:
-                    prompt_tokens = getattr(
-                        response.usage,
-                        "prompt_tokens",
-                        getattr(response.usage, "input_tokens", 0),
-                    )
-                    completion_tokens = getattr(
-                        response.usage,
-                        "completion_tokens",
-                        getattr(response.usage, "output_tokens", 0),
-                    )
-                    total_tokens = getattr(
-                        response.usage,
-                        "total_tokens",
-                        prompt_tokens + completion_tokens,
-                    )
-                    prompt_cache_hit_tokens = getattr(
-                        response.usage, "prompt_cache_hit_tokens", 0
-                    ) or 0
-                    prompt_cache_miss_tokens = getattr(
-                        response.usage, "prompt_cache_miss_tokens", 0
-                    ) or 0
-                    usage = TokenUsage(
-                        prompt_tokens=prompt_tokens,
-                        completion_tokens=completion_tokens,
-                        total_tokens=total_tokens,
-                        prompt_cache_hit_tokens=prompt_cache_hit_tokens,
-                        prompt_cache_miss_tokens=prompt_cache_miss_tokens,
-                    )
+                usage = (
+                    TokenUsageTracker.extract_usage_from_response(response)
+                    if hasattr(response, "usage") and response.usage
+                    else None
+                )
                 
                 # 计算成本
                 cost = None
@@ -609,22 +768,32 @@ class LLMClient:
                     print(f"[{call_id}] ❌ 值错误: {e}")
                     break  # 格式错误不重试
                 
-            except APIConnectionError as e:
-                last_error = f"连接错误: {str(e)}"
-                print(f"[{call_id}] ⚠️ API连接失败: {e}")
-                
-            except APIError as e:
-                last_error = f"API错误: {str(e)}"
-                print(f"[{call_id}] ⚠️ API错误: {e}")
-                
-            except asyncio.TimeoutError:
-                last_error = "请求超时"
-                print(f"[{call_id}] ⚠️ 请求超时")
-                
             except Exception as e:
-                last_error = f"未知错误: {str(e)}"
-                print(f"[{call_id}] ❌ 未知错误: {e}")
-                break  # 未知错误不重试
+                classification = classify_llm_error(e)
+                last_classification = classification
+                last_error = f"{classification.kind}: {classification.message}"
+
+                fallback_profile = self._fallback_profile_for_error(classification)
+                if fallback_profile:
+                    fallback_response = await self._run_completion_fallback(
+                        classification,
+                        prompt=prompt,
+                        model=model,
+                        temperature=temperature,
+                        stage=stage,
+                        metadata=metadata,
+                        max_tokens=max_tokens,
+                        system_prompt=system_prompt,
+                    )
+                    self._record_fallback_event(
+                        call_record, classification, fallback_profile, retries, start_time
+                    )
+                    return fallback_response
+
+                level = "⚠️" if classification.retryable else "❌"
+                print(f"[{call_id}] {level} {last_error}")
+                if not classification.retryable:
+                    break
             
             # 重试逻辑
             retries += 1
@@ -647,6 +816,7 @@ class LLMClient:
             "usage": None,
             "cost": None,
             "error": last_error,
+            "error_classification": last_classification.to_dict() if last_classification else None,
             "retry_count": retries
         })
         
@@ -662,7 +832,8 @@ class LLMClient:
             cost=None,
             error=last_error,
             call_id=call_id,
-            duration_ms=duration_ms
+            duration_ms=duration_ms,
+            error_classification=last_classification.to_dict() if last_classification else None,
         )
     
     async def get_json_completion(
@@ -788,6 +959,7 @@ class LLMClient:
         full_content = []
         usage = None
         error_msg = None
+        error_classification: Optional[LLMErrorClassification] = None
 
         try:
             stream = await self.client.chat.completions.create(**create_kwargs)
@@ -800,19 +972,41 @@ class LLMClient:
                         yield delta.content
 
                 if hasattr(chunk, 'usage') and chunk.usage:
-                    prompt_tokens = getattr(chunk.usage, "prompt_tokens", 0) or 0
-                    completion_tokens = getattr(chunk.usage, "completion_tokens", 0) or 0
-                    total_tokens = getattr(chunk.usage, "total_tokens", prompt_tokens + completion_tokens)
-                    usage = TokenUsage(
-                        prompt_tokens=prompt_tokens,
-                        completion_tokens=completion_tokens,
-                        total_tokens=total_tokens,
-                        prompt_cache_hit_tokens=getattr(chunk.usage, "prompt_cache_hit_tokens", 0) or 0,
-                        prompt_cache_miss_tokens=getattr(chunk.usage, "prompt_cache_miss_tokens", 0) or 0,
-                    )
+                    usage = TokenUsageTracker.extract_usage_from_response(chunk)
 
         except Exception as e:
-            error_msg = f"Streaming错误: {e}"
+            classification = classify_llm_error(e)
+            error_classification = classification
+            fallback_profile = self._fallback_profile_for_error(classification)
+            if fallback_profile:
+                self._annotate_stream_fallback_record(
+                    call_record, classification, fallback_profile, start_time
+                )
+                print(
+                    f"[{call_id}] 检测到 {classification.kind}，"
+                    f"切换官方 DeepSeek profile: {fallback_profile}"
+                )
+                try:
+                    fallback_client = self._build_fallback_client(fallback_profile)
+                    async for delta in fallback_client.get_streaming_completion(
+                        prompt=prompt,
+                        model=model,
+                        temperature=temperature,
+                        stage=stage,
+                        metadata=metadata,
+                        max_tokens=max_tokens,
+                        messages=messages,
+                    ):
+                        yield delta
+                except Exception as fallback_error:
+                    fallback_classification = classify_llm_error(fallback_error)
+                    print(
+                        f"[{call_id}] fallback {fallback_profile} 失败: "
+                        f"{fallback_classification.kind}: {fallback_classification.message}"
+                    )
+                return
+
+            error_msg = f"{classification.kind}: {classification.message}"
             print(f"[{call_id}] {error_msg}")
 
         end_time = asyncio.get_event_loop().time()
@@ -834,6 +1028,7 @@ class LLMClient:
             "usage": usage.__dict__ if usage else None,
             "cost": cost,
             "error": error_msg,
+            "error_classification": error_classification.to_dict() if error_classification else None,
             "retry_count": 0,
         })
 

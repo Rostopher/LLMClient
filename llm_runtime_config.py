@@ -81,9 +81,12 @@ def _load_env_file(env_file: Optional[str]) -> None:
         load_dotenv(Path(env_file).expanduser().resolve(), override=False)
         return
 
-    # dotenv defaults to cwd traversal. Also try the project root near this package
-    # so scripts launched from subdirectories still see the repository .env.
+    # Keep existing process/cwd values authoritative, then load package-local and
+    # project-level files explicitly so behavior never depends on the launch cwd.
     load_dotenv(override=False)
+    package_env = PACKAGE_DIR / ".env"
+    if package_env.exists():
+        load_dotenv(package_env, override=False)
     project_env = PACKAGE_DIR.parent / ".env"
     if project_env.exists():
         load_dotenv(project_env, override=False)

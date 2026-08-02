@@ -215,12 +215,13 @@ client.reset_session()
 
 `LLMClient_v2` 现在以 **profile** 作为可调用端点的最小单位。`provider`、`family`、`protocol`、`model` 分开记录，因此同一个模型可以通过不同供应商或不同协议调用。
 
-默认配置文件：`LLMClient_v2/llm_apis.yaml`。密钥从 `.env` 或环境变量读取，推荐显式区分模型族，例如：
+默认配置文件：`LLMClient_v2/llm_apis.yaml`。密钥从环境变量、`LLMClient/.env` 或项目根目录 `.env` 读取；已有环境变量优先，且加载行为不依赖启动目录。推荐显式区分供应商/模型族，例如：
 
 ```env
 YUNWU_GPT_API_KEY=...
 YUNWU_GEMINI_API_KEY=...
 DEEPSEEK_API_KEY=...
+OPENCODE_GO_API_KEY=...
 ```
 
 不会从 `YUNWU_GPT_API_KEY` / `YUNWU_GEMINI_API_KEY` 回退到通用 `YUNWU_API_KEY`。
@@ -245,7 +246,40 @@ apis:
     base_url: https://yunwu.ai/v1
     api_key_env: YUNWU_GEMINI_API_KEY
     default_model: gemini-2.5-pro
+
+  opencode_go_deepseek_pro:
+    provider: opencode_go
+    family: deepseek
+    protocol: openai_chat
+    base_url: https://opencode.ai/zen/go/v1
+    api_key_env: OPENCODE_GO_API_KEY
+    default_model: deepseek-v4-pro
+
+  opencode_go_deepseek_flash:
+    provider: opencode_go
+    family: deepseek
+    protocol: openai_chat
+    base_url: https://opencode.ai/zen/go/v1
+    api_key_env: OPENCODE_GO_API_KEY
+    default_model: deepseek-v4-flash
 ```
+
+### OpenCode Go 错误分类与官方 fallback
+
+`llm_error_classifier.py` 会把兼容 OpenAI 的异常统一标记为 `api_key_error`、
+`connection_error`、`timeout`、`quota_exhausted`、`rate_limited`、`server_error`
+等类型。401 认证失败（以及明确指向 API key/credential 的 403）会停止当前
+供应商重试，并按模型切换到官方 DeepSeek：
+
+```text
+opencode_go_deepseek_pro   → deepseek_official_chat
+opencode_go_deepseek_flash → deepseek_official_flash
+```
+
+连接错误可以识别（普通/视觉调用按 retryable 重试，流式调用记录后结束），但不会因网络抖动切换供应商；配额耗尽、
+限流、区域/权限限制和服务端错误同样不会伪装成 API key 失效。`LLMResponse`
+及 JSONL 调用日志会记录 `error_classification`、`fallback_used`、
+`fallback_from` 和 `fallback_reason`，错误正文会脱敏 API key/Bearer token。
 
 ### 在业务脚本中一行接入
 
@@ -288,6 +322,8 @@ client = create_client_from_cli(args)
 python -m LLMClient_v2.cli list-apis
 python -m LLMClient_v2.cli smoke --api deepseek_official_chat --api-key dummy --prompt "你好" --dry-run
 python -m LLMClient_v2.cli smoke --api deepseek_official_chat --prompt "你好"
+python -m LLMClient_v2.cli smoke --api opencode_go_deepseek_pro --prompt "你好"
+python -m LLMClient_v2.cli smoke --api opencode_go_deepseek_flash --prompt "你好"
 python -m LLMClient_v2.cli smoke --api yunwu_gemini_25_pro_chat --prompt-file prompts/test.txt
 ```
 

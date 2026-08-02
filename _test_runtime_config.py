@@ -9,6 +9,7 @@ import os
 import tempfile
 from pathlib import Path
 
+from . import llm_runtime_config as runtime_config_module
 from .llm_runtime_config import resolve_runtime_config
 
 
@@ -122,8 +123,26 @@ apis:
         assert cfg.max_retries == 2
 
 
+def test_default_loads_package_env() -> None:
+    env_name = "LLMCLIENT_PACKAGE_ENV_TEST_KEY"
+    os.environ.pop(env_name, None)
+    original_package_dir = runtime_config_module.PACKAGE_DIR
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            package_dir = Path(tmp) / "LLMClient"
+            package_dir.mkdir()
+            _write(package_dir / ".env", f"{env_name}=package-key\n")
+            runtime_config_module.PACKAGE_DIR = package_dir
+            runtime_config_module._load_env_file(None)
+            assert os.getenv(env_name) == "package-key"
+    finally:
+        runtime_config_module.PACKAGE_DIR = original_package_dir
+        os.environ.pop(env_name, None)
+
+
 if __name__ == "__main__":
     test_profile_env_resolution()
     test_no_generic_provider_key_fallback()
     test_explicit_overrides_win()
+    test_default_loads_package_env()
     print("runtime config tests passed")
