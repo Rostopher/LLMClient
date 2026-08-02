@@ -111,3 +111,15 @@ def test_missing_api_key_configuration_is_auth_related():
 
     assert result.api_key_related is True
     assert result.fallback_eligible is True
+
+
+def test_runtime_profile_missing_api_key_message_is_auth_related():
+    result = classify_llm_error(
+        ValueError(
+            "LLM profile 'opencode_go_deepseek_flash' 缺少 api_key。"
+            "请通过 --api-key、OPENCODE_GO_API_KEY 或配置文件提供。"
+        )
+    )
+
+    assert result.kind == "api_key_error"
+    assert result.fallback_eligible is True

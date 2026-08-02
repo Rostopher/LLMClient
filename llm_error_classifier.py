@@ -177,7 +177,7 @@ def classify_llm_error(error: BaseException) -> LLMErrorClassification:
     auth_hint = any(
         marker in lowered
         for marker in (
-            "api key", "apikey", "authentication", "unauthorized", "credential",
+            "api key", "api_key", "apikey", "authentication", "unauthorized", "credential",
             "api密钥", "apikey_env", "缺少api", "密钥", "missing key", "invalid key",
             "token is invalid", "autherror",
         )
