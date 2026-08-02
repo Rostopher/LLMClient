@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-"""OpenCode Go 的供应商级 DeepSeek V4 美元定价回归。"""
+"""OpenCode Go 复用 DeepSeek 官方模型定价的回归。"""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from math import isclose
 from .token_usage_tracker import ModelPricingConfig, TokenUsage, TokenUsageTracker
 
 
-def test_opencode_go_deepseek_pricing() -> None:
+def test_opencode_go_reuses_official_deepseek_pricing() -> None:
     pricing = ModelPricingConfig()
     usage = TokenUsage(
         prompt_tokens=1_000_000,
@@ -19,16 +19,16 @@ def test_opencode_go_deepseek_pricing() -> None:
     )
 
     pro = pricing.calculate_cost(usage, "deepseek-v4-pro", provider="opencode_go")
-    assert pro["currency"] == "USD"
-    assert pro["input_cost"] == 0.435
-    assert pro["output_cost"] == 0.87
-    assert isclose(pro["standard_cost"], 1.305)
+    assert pro["currency"] == "CNY"
+    assert pro["input_cost"] == 3.0
+    assert pro["output_cost"] == 6.0
+    assert isclose(pro["standard_cost"], 9.0)
 
     flash = pricing.calculate_cost(usage, "deepseek-v4-flash", provider="opencode_go")
-    assert flash["currency"] == "USD"
-    assert flash["input_cost"] == 0.14
-    assert flash["output_cost"] == 0.28
-    assert isclose(flash["standard_cost"], 0.42)
+    assert flash["currency"] == "CNY"
+    assert flash["input_cost"] == 1.0
+    assert flash["output_cost"] == 2.0
+    assert isclose(flash["standard_cost"], 3.0)
 
 
 def test_opencode_go_cached_read_pricing() -> None:
@@ -42,12 +42,12 @@ def test_opencode_go_cached_read_pricing() -> None:
     )
 
     pro = pricing.calculate_cost(usage, "deepseek-v4-pro", provider="opencode_go")
-    assert pro["currency"] == "USD"
-    assert pro["standard_cost"] == 0.003625
+    assert pro["currency"] == "CNY"
+    assert pro["standard_cost"] == 0.025
 
     flash = pricing.calculate_cost(usage, "deepseek-v4-flash", provider="opencode_go")
-    assert flash["currency"] == "USD"
-    assert flash["standard_cost"] == 0.0028
+    assert flash["currency"] == "CNY"
+    assert flash["standard_cost"] == 0.02
 
 
 def test_openai_cached_tokens_usage_shape() -> None:
@@ -65,7 +65,7 @@ def test_openai_cached_tokens_usage_shape() -> None:
 
 
 if __name__ == "__main__":
-    test_opencode_go_deepseek_pricing()
+    test_opencode_go_reuses_official_deepseek_pricing()
     test_opencode_go_cached_read_pricing()
     test_openai_cached_tokens_usage_shape()
     print("OpenCode Go pricing tests passed")

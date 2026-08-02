@@ -137,23 +137,23 @@ class ModelPricingConfig:
             )
         }
 
-        # 同一模型 ID 可由不同供应商以不同币种/费率提供。
-        # OpenCode Go 价格以其官方 USD / 1M tokens 公示为准。
+        # OpenCode Go 暂不使用供应商专属价格，复用上面的 DeepSeek 官方模型价格。
+        # 保留历史配置作为注释，避免误把旧费率当成当前计费口径。
         self.provider_model_configs = {
-            ("opencode_go", "deepseek-v4-pro"): ModelPricing(
-                model_name="deepseek-v4-pro",
-                input_price_per_million=0.435,
-                output_price_per_million=0.87,
-                cache_hit_input_price_per_million=0.003625,
-                currency="USD",
-            ),
-            ("opencode_go", "deepseek-v4-flash"): ModelPricing(
-                model_name="deepseek-v4-flash",
-                input_price_per_million=0.14,
-                output_price_per_million=0.28,
-                cache_hit_input_price_per_million=0.0028,
-                currency="USD",
-            ),
+            # ("opencode_go", "deepseek-v4-pro"): ModelPricing(
+            #     model_name="deepseek-v4-pro",
+            #     input_price_per_million=0.435,
+            #     output_price_per_million=0.87,
+            #     cache_hit_input_price_per_million=0.003625,
+            #     currency="USD",
+            # ),
+            # ("opencode_go", "deepseek-v4-flash"): ModelPricing(
+            #     model_name="deepseek-v4-flash",
+            #     input_price_per_million=0.14,
+            #     output_price_per_million=0.28,
+            #     cache_hit_input_price_per_million=0.0028,
+            #     currency="USD",
+            # ),
         }
     
     def get_model_config(self, model_name: str, provider: Optional[str] = None) -> ModelPricing:
