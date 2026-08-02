@@ -94,7 +94,7 @@ stage_routing:
     model: deepseek-v4-pro
     temperature: 0.7
   translation:
-    api: opencode_go_deepseek_flash
+    api: deepseek_official_flash
     model: deepseek-v4-flash
     temperature: 0.3
   chat_interaction:

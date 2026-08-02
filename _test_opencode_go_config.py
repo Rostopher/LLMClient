@@ -42,19 +42,22 @@ def test_paper_stages_route_to_opencode_go() -> None:
         "deep_report_generation",
         "chat_interaction",
     }
-    flash_stages = {
+    opencode_flash_stages = {
         "metadata_extraction",
         "attribute_tree",
         "section_detection",
         "paper_structure",
-        "translation",
     }
+    official_flash_stages = {"translation"}
 
     for stage in pro_stages:
         assert routing[stage]["api"] == "opencode_go_deepseek_pro"
         assert routing[stage]["model"] == "deepseek-v4-pro"
-    for stage in flash_stages:
+    for stage in opencode_flash_stages:
         assert routing[stage]["api"] == "opencode_go_deepseek_flash"
+        assert routing[stage]["model"] == "deepseek-v4-flash"
+    for stage in official_flash_stages:
+        assert routing[stage]["api"] == "deepseek_official_flash"
         assert routing[stage]["model"] == "deepseek-v4-flash"
 
 
