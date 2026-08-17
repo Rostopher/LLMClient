@@ -219,6 +219,7 @@ def classify_llm_error(error: BaseException) -> LLMErrorClassification:
             status_code=status,
             provider_error_type=_sanitize(provider_error_type) if provider_error_type else None,
             retryable=False,
+            fallback_eligible=True,
             response_body=body_text,
         )
     if status == 429:

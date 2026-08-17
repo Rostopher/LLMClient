@@ -56,8 +56,8 @@ class LLMClient:
     - 支持多供应商配置
     """
 
-    # 只有 OpenCode Go 的 API-key/auth 错误切换到官方 DeepSeek；配额、限流、
-    # 连接和服务端错误不会静默改走另一家供应商。
+    # OpenCode Go 的 API-key/auth 错误和明确额度耗尽切换到官方 DeepSeek；
+    # 普通限流、连接和服务端错误不会静默改走另一家供应商。
     _API_KEY_FALLBACK_PROFILES = {
         "opencode_go_deepseek_pro": "deepseek_official_chat",
         "opencode_go_deepseek_flash": "deepseek_official_flash",

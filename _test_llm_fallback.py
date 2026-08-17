@@ -30,13 +30,15 @@ class FakeClient:
         self.chat = SimpleNamespace(completions=FakeCompletions(error))
 
 
-def _client_with_failure(error):
+def _client_with_failure(error, api_name="opencode_go_deepseek_pro"):
     client = LLMClient.__new__(LLMClient)
-    client.api_name = "opencode_go_deepseek_pro"
+    client.api_name = api_name
     client.provider = "opencode_go"
     client.family = "deepseek"
     client.protocol = "openai_chat"
-    client.default_model = "deepseek-v4-pro"
+    client.default_model = (
+        "deepseek-v4-flash" if api_name.endswith("_flash") else "deepseek-v4-pro"
+    )
     client.default_temperature = 0.0
     client.max_retries = 0
     client.retry_base_delay = 0.0
@@ -78,6 +80,42 @@ def test_api_key_error_redirects_to_official_profile(monkeypatch):
     assert response.fallback_reason == "api_key_error"
     assert requested == ["deepseek_official_chat"]
     assert "sk-do-not-log" not in str(response.error_classification)
+
+
+def test_usage_limit_redirects_flash_to_official_profile():
+    error = FakeAPIError(
+        "usage limit",
+        429,
+        {
+            "error": {
+                "type": "GoUsageLimitError",
+                "message": "5-hour usage limit reached",
+            }
+        },
+    )
+    client = _client_with_failure(error, api_name="opencode_go_deepseek_flash")
+
+    fallback = SimpleNamespace(
+        get_completion=lambda **kwargs: asyncio.sleep(
+            0,
+            result=LLMResponse(success=True, content="official flash answer"),
+        )
+    )
+    requested = []
+
+    def build_fallback(profile):
+        requested.append(profile)
+        return fallback
+
+    client._build_fallback_client = build_fallback
+    response = asyncio.run(client.get_completion("hello"))
+
+    assert response.success is True
+    assert response.content == "official flash answer"
+    assert response.fallback_used is True
+    assert response.fallback_from == "opencode_go_deepseek_flash"
+    assert response.fallback_reason == "quota_exhausted"
+    assert requested == ["deepseek_official_flash"]
 
 
 def test_connection_error_is_reported_without_provider_fallback():

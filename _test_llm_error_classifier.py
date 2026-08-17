@@ -67,7 +67,7 @@ def test_opencode_usage_limit_is_quota_not_api_key():
     assert result.kind == "quota_exhausted"
     assert result.provider_error_type == "GoUsageLimitError"
     assert result.retryable is False
-    assert result.fallback_eligible is False
+    assert result.fallback_eligible is True
 
 
 def test_usage_limit_marker_wins_even_when_gateway_uses_402():
@@ -80,7 +80,7 @@ def test_usage_limit_marker_wins_even_when_gateway_uses_402():
     )
 
     assert result.kind == "quota_exhausted"
-    assert result.fallback_eligible is False
+    assert result.fallback_eligible is True
 
 
 def test_rate_limit_and_server_errors_are_retryable():

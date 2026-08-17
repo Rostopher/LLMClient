@@ -268,7 +268,8 @@ apis:
 
 `llm_error_classifier.py` 会把兼容 OpenAI 的异常统一标记为 `api_key_error`、
 `connection_error`、`timeout`、`quota_exhausted`、`rate_limited`、`server_error`
-等类型。401 认证失败（以及明确指向 API key/credential 的 403）会停止当前
+等类型。401 认证失败（以及明确指向 API key/credential 的 403）和带有
+`GoUsageLimitError`、`FreeUsageLimitError` 等明确信号的额度耗尽会停止当前
 供应商重试，并按模型切换到官方 DeepSeek：
 
 ```text
@@ -276,8 +277,8 @@ opencode_go_deepseek_pro   → deepseek_official_chat
 opencode_go_deepseek_flash → deepseek_official_flash
 ```
 
-连接错误可以识别（普通/视觉调用按 retryable 重试，流式调用记录后结束），但不会因网络抖动切换供应商；配额耗尽、
-限流、区域/权限限制和服务端错误同样不会伪装成 API key 失效。`LLMResponse`
+连接错误可以识别（普通/视觉调用按 retryable 重试，流式调用记录后结束），但不会因网络抖动切换供应商；普通限流、
+区域/权限限制和服务端错误也不会触发供应商切换。`LLMResponse`
 及 JSONL 调用日志会记录 `error_classification`、`fallback_used`、
 `fallback_from` 和 `fallback_reason`，错误正文会脱敏 API key/Bearer token。
 
