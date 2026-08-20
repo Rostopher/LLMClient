@@ -1,4 +1,4 @@
-default_api: yunwu_gpt_4o_chat
+default_api: deepseek_official_flash
 
 apis:
   yunwu_gpt_4o_chat:
@@ -8,6 +8,28 @@ apis:
     base_url: https://yunwu.ai/v1
     api_key_env: YUNWU_GPT_API_KEY
     default_model: gpt-4o-2024-08-06
+    temperature: 0.7
+    max_retries: 5
+    retry_base_delay: 1
+
+  openlux_gpt_4o_chat:
+    provider: openlux
+    family: gpt
+    protocol: openai_chat
+    base_url: https://openlux.ai/v1
+    api_key_env: OPENLUX_GPT_API_KEY
+    default_model: gpt-4o-2024-08-06
+    temperature: 0.7
+    max_retries: 5
+    retry_base_delay: 1
+
+  openlux_gemini_25_pro_chat:
+    provider: openlux
+    family: gemini
+    protocol: openai_chat
+    base_url: https://openlux.ai/v1
+    api_key_env: OPENLUX_GEMINI_API_KEY
+    default_model: gemini-2.5-pro
     temperature: 0.7
     max_retries: 5
     retry_base_delay: 1
