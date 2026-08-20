@@ -1,0 +1,23 @@
+[project]
+name = "llmclient"
+version = "1.0.0"
+description = "工程化的大模型调用客户端：多供应商、异步重试、成本与 token 追踪、结构化提取、批量断点续传"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "openai",
+    "pydantic",
+    "pyyaml",
+    "python-dotenv",
+]
+
+[tool.setuptools]
+# 仓库根即包根：目录映射 LLMClient -> .，安装后 import LLMClient 与
+# website 生态的 sys.path 注入方式行为一致
+package-dir = {"LLMClient" = "."}
+packages = ["LLMClient"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
