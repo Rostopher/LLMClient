@@ -257,5 +257,6 @@ A: `TokenUsageTracker.pricing_config.calculate_cost()` 根据 provider 类型使
 
 | 日期 | 变更内容 |
 |------|----------|
+| 2026-08-22 | llm_apis.yaml stage_routing 8 个阶段全量切换至 deepseek_official_flash（官方直连，确保 DeepSeek context caching 生效且命中字段可计量；配套 llm_read_paper_ai_workflow 全文前置模板改造） |
 | 2026-06-01 | 移除对已废弃 llm_config.py 的所有引用，FAQ 更新为 llm_apis.yaml 配置方式 |
 | 2026-02-08 | 初始化模块文档，添加 Anthropic 适配器 |

@@ -90,36 +90,39 @@ apis:
     retry_base_delay: 1
 
 # Stage → API/Model/Temperature 路由映射
+# 说明：统一走 deepseek 官方直连（deepseek_official_flash），
+# 官方 context caching 自动生效且返回 prompt_cache_hit_tokens 计量字段；
+# opencode_go 等第三方网关是否透传缓存未验证，暂不作为主力路由。
 stage_routing:
   metadata_extraction:
-    api: opencode_go_deepseek_flash
+    api: deepseek_official_flash
     model: deepseek-v4-flash
     temperature: 0
   attribute_tree:
-    api: opencode_go_deepseek_flash
+    api: deepseek_official_flash
     model: deepseek-v4-flash
     temperature: 0.7
   section_detection:
-    api: opencode_go_deepseek_flash
+    api: deepseek_official_flash
     model: deepseek-v4-flash
     temperature: 0
   paper_structure:
-    api: opencode_go_deepseek_flash
+    api: deepseek_official_flash
     model: deepseek-v4-flash
     temperature: 0
   summary_report_generation:
-    api: opencode_go_deepseek_pro
-    model: deepseek-v4-pro
+    api: deepseek_official_flash
+    model: deepseek-v4-flash
     temperature: 0.7
   deep_report_generation:
-    api: opencode_go_deepseek_pro
-    model: deepseek-v4-pro
+    api: deepseek_official_flash
+    model: deepseek-v4-flash
     temperature: 0.7
   translation:
     api: deepseek_official_flash
     model: deepseek-v4-flash
     temperature: 0.3
   chat_interaction:
-    api: opencode_go_deepseek_pro
-    model: deepseek-v4-pro
+    api: deepseek_official_flash
+    model: deepseek-v4-flash
     temperature: 0.7
