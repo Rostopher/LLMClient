@@ -310,12 +310,14 @@ class LLMClient:
         self,
         classification: LLMErrorClassification,
         *,
-        prompt: str,
-        image_base64: str,
+        prompt: Optional[str],
+        image_base64: Optional[Union[str, list]],
         model: Optional[str],
         temperature: Optional[float],
         stage: Optional[str],
         metadata: Optional[Dict[str, Any]],
+        system_prompt: Optional[str] = None,
+        content_parts: Optional[list] = None,
     ) -> Optional[LLMResponse]:
         fallback_profile = self._fallback_profile_for_error(classification)
         if not fallback_profile:
@@ -333,6 +335,8 @@ class LLMClient:
                 temperature=temperature,
                 stage=stage,
                 metadata=metadata,
+                system_prompt=system_prompt,
+                content_parts=content_parts,
             )
         except Exception as fallback_error:
             fallback_classification = classify_llm_error(fallback_error)
@@ -371,24 +375,30 @@ class LLMClient:
     
     async def get_vision_completion(
         self,
-        prompt: str,
-        image_base64: str,
+        prompt: Optional[str] = None,
+        image_base64: Optional[Union[str, list]] = None,
         model: Optional[str] = None,
         temperature: Optional[float] = None,
         stage: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        system_prompt: Optional[str] = None,
+        content_parts: Optional[list] = None,
     ) -> LLMResponse:
         """
         获取包含图片的LLM完成结果（vision API）
-        
+
         Args:
-            prompt: 提示词
-            image_base64: Base64编码的图片数据
+            prompt: 提示词（与 image_base64 搭配的传统单文本块形态）
+            image_base64: Base64编码的图片数据，单张（str）或多张（list[str]）
             model: 模型名称，如果为None则使用默认模型
             temperature: 温度参数，如果为None则使用默认温度
             stage: 阶段名称，用于路由覆盖（可选）
             metadata: 额外的元数据，会被记录到日志中（可选）
-            
+            system_prompt: 系统提示词（可选）
+            content_parts: 完整的多模态 user 消息体（可选，OpenAI content
+                parts 格式）。给出时忽略 prompt/image_base64，用于文本与
+                多图交错排布（如"文件名+图片"配对清单）的场景
+
         Returns:
             LLMResponse对象，包含成功状态、内容、用量、成本等信息
         """
@@ -396,7 +406,7 @@ class LLMClient:
         call_id = self._generate_call_id()
         timestamp_start = self._get_current_timestamp()
         start_time = asyncio.get_event_loop().time()
-        
+
         # 确定最终使用的参数
         model_name = model or self.default_model
         temperature_effective = (
@@ -404,21 +414,31 @@ class LLMClient:
             if temperature is not None
             else self.default_temperature
         )
-        
+
         # 构建vision消息
-        messages = [{
-            "role": "user",
-            "content": [
-                {"type": "text", "text": prompt},
-                {
+        if content_parts is not None:
+            user_content = content_parts
+            image_count = sum(
+                1 for p in content_parts
+                if isinstance(p, dict) and p.get("type") == "image_url"
+            )
+        else:
+            images = (
+                [image_base64] if isinstance(image_base64, str)
+                else list(image_base64 or [])
+            )
+            user_content = [{"type": "text", "text": prompt or ""}]
+            for b64 in images:
+                user_content.append({
                     "type": "image_url",
-                    "image_url": {
-                        "url": f"data:image/jpeg;base64,{image_base64}"
-                    }
-                }
-            ]
-        }]
-        
+                    "image_url": {"url": f"data:image/jpeg;base64,{b64}"}
+                })
+            image_count = len(images)
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": user_content})
+
         # 构建初始元数据记录
         call_record = {
             "call_id": call_id,
@@ -427,10 +447,10 @@ class LLMClient:
             "provider": self.provider,
             "model": model_name,
             "temperature": temperature_effective,
-            "prompt": prompt,
-            "prompt_length": len(prompt),
-            "has_image": True,
-            "image_size_bytes": len(image_base64),
+            "prompt": prompt if content_parts is None else "(multimodal content_parts)",
+            "prompt_length": len(prompt) if prompt else 0,
+            "has_image": image_count > 0,
+            "image_count": image_count,
             "stage": stage,
         }
         
@@ -548,6 +568,8 @@ class LLMClient:
                         temperature=temperature,
                         stage=stage,
                         metadata=metadata,
+                        system_prompt=system_prompt,
+                        content_parts=content_parts,
                     )
                     self._record_fallback_event(
                         call_record, classification, fallback_profile, retries, start_time
