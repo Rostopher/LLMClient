@@ -121,6 +121,15 @@ class ModelPricingConfig:
                 cache_hit_input_price_per_million=0.02,
                 currency="CNY",
             ),
+            # 视觉版与 v4-flash 逐格同价（官方口径，2026-08-21 上线）；
+            # 缺此条目会落入 default 兜底（USD $1/$3），成本被高估约 7 倍
+            "deepseek-v4-flash-vision-exp": ModelPricing(
+                model_name="deepseek-v4-flash-vision-exp",
+                input_price_per_million=1.0,
+                output_price_per_million=2.0,
+                cache_hit_input_price_per_million=0.02,
+                currency="CNY",
+            ),
             "deepseek-v4-pro": ModelPricing(
                 model_name="deepseek-v4-pro",
                 input_price_per_million=3.0,
