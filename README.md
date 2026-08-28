@@ -264,6 +264,20 @@ apis:
     default_model: deepseek-v4-flash
 ```
 
+### 思考模式透传（DeepSeek）
+
+profile 支持两个可选字段，会原样透传到 chat completion 请求（仅 `openai_chat` 协议）：
+
+```yaml
+  deepseek_official_chat:
+    reasoning_effort: high      # low/high/max；思考模式下 temperature 被服务端忽略
+    extra_body:
+      thinking:
+        type: enabled           # enabled/disabled 思考模式开关
+```
+
+也可在 `LLMClient(...)` 构造函数或单次 `get_completion(..., extra_body=..., reasoning_effort=...)` 上覆盖（调用级 > 构造级 > profile）。思考 token 计入 `completion_tokens`，token/成本/缓存统计无需改动。
+
 ### OpenCode Go 错误分类与官方 fallback
 
 `llm_error_classifier.py` 会把兼容 OpenAI 的异常统一标记为 `api_key_error`、

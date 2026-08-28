@@ -82,6 +82,8 @@ class LLMClient:
         provider: Optional[str] = None,
         family: Optional[str] = None,
         max_concurrent: Optional[int] = None,
+        extra_body: Optional[Dict[str, Any]] = None,
+        reasoning_effort: Optional[str] = None,
     ):
         """
         初始化LLM客户端
@@ -108,6 +110,8 @@ class LLMClient:
                 provider=provider,
                 family=family,
                 max_concurrent=max_concurrent,
+                extra_body=extra_body,
+                reasoning_effort=reasoning_effort,
             )
         else:
             runtime_config = resolve_runtime_config(
@@ -123,6 +127,8 @@ class LLMClient:
                 api_key_env=api_key_env,
                 log_file=log_file,
                 max_concurrent=max_concurrent,
+                extra_body=extra_body,
+                reasoning_effort=reasoning_effort,
                 protocol=protocol,
                 provider=provider,
                 family=family,
@@ -147,6 +153,8 @@ class LLMClient:
         self.max_retries = runtime_config.max_retries
         self.retry_base_delay = runtime_config.retry_base_delay
         self.max_concurrent = runtime_config.max_concurrent
+        self.extra_body = runtime_config.extra_body
+        self.reasoning_effort = runtime_config.reasoning_effort
         
         # 获取API密钥
         resolved_api_key = runtime_config.api_key
@@ -194,6 +202,29 @@ class LLMClient:
         temperature = route.get("temperature")
         return cls(api_name=api_name, model=model, temperature=temperature, **kwargs)
     
+    def _apply_thinking_kwargs(
+        self,
+        create_kwargs: Dict[str, Any],
+        extra_body: Optional[Dict[str, Any]] = None,
+        reasoning_effort: Optional[str] = None,
+    ) -> None:
+        """合并思考模式参数到 create_kwargs（仅 openai_chat 协议）。
+
+        DeepSeek 思考模式：extra_body={"thinking": {"type": "enabled/disabled"}}
+        控制开关，reasoning_effort（low/high/max）控制思考强度；思考模式下
+        temperature 等采样参数被服务端忽略。profile 级配置为默认，调用级参数覆盖。
+        """
+        if self.protocol != "openai_chat":
+            return
+        effort = reasoning_effort or self.reasoning_effort
+        if effort:
+            create_kwargs["reasoning_effort"] = effort
+        body = dict(self.extra_body or {})
+        if extra_body:
+            body.update(extra_body)
+        if body:
+            create_kwargs["extra_body"] = body
+
     def _generate_call_id(self) -> str:
         """生成唯一的调用ID（16位哈希）
 
@@ -631,6 +662,8 @@ class LLMClient:
         metadata: Optional[Dict[str, Any]] = None,
         max_tokens: Optional[int] = None,
         system_prompt: Optional[str] = None,
+        extra_body: Optional[Dict[str, Any]] = None,
+        reasoning_effort: Optional[str] = None,
     ) -> LLMResponse:
         """
         获取LLM完成结果（核心方法）
@@ -708,6 +741,9 @@ class LLMClient:
                     }
                     if max_tokens is not None:
                         create_kwargs["max_tokens"] = max_tokens
+                    self._apply_thinking_kwargs(
+                        create_kwargs, extra_body=extra_body, reasoning_effort=reasoning_effort
+                    )
                     response = await self.client.chat.completions.create(**create_kwargs)
 
                     # 提取响应内容
@@ -977,6 +1013,8 @@ class LLMClient:
         }
         if max_tokens is not None:
             create_kwargs["max_tokens"] = max_tokens
+
+        self._apply_thinking_kwargs(create_kwargs)
 
         full_content = []
         usage = None

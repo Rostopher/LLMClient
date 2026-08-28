@@ -34,6 +34,40 @@ apis:
     max_retries: 5
     retry_base_delay: 1
 
+  # 报告生成对比实验用（模型 ID 待 key 配好后经 /v1/models 核对）
+  openlux_gpt56_chat:
+    provider: openlux
+    family: gpt
+    protocol: openai_chat
+    base_url: https://api.openlux.ai/v1
+    api_key_env: OPENLUX_API_KEY
+    default_model: gpt-5.6-sol
+    temperature: 0.7
+    max_retries: 5
+    retry_base_delay: 1
+
+  openlux_fable_chat:
+    provider: openlux
+    family: claude
+    protocol: openai_chat
+    base_url: https://api.openlux.ai/v1
+    api_key_env: OPENLUX_API_KEY
+    default_model: claude-fable-5
+    temperature: 0.7
+    max_retries: 5
+    retry_base_delay: 1
+
+  openlux_gemini_37_flash_chat:
+    provider: openlux
+    family: gemini
+    protocol: openai_chat
+    base_url: https://api.openlux.ai/v1
+    api_key_env: OPENLUX_API_KEY
+    default_model: gemini-3.7-flash
+    temperature: 0.7
+    max_retries: 5
+    retry_base_delay: 1
+
   yunwu_gemini_25_pro_chat:
     provider: yunwu
     family: gemini
@@ -46,6 +80,10 @@ apis:
     retry_base_delay: 1
 
   deepseek_official_chat:
+    reasoning_effort: high
+    extra_body:
+      thinking:
+        type: enabled
     provider: deepseek_official
     family: deepseek
     protocol: openai_chat
@@ -57,6 +95,10 @@ apis:
     retry_base_delay: 1
 
   deepseek_official_flash:
+    reasoning_effort: high
+    extra_body:
+      thinking:
+        type: enabled
     provider: deepseek_official
     family: deepseek
     protocol: openai_chat

@@ -41,6 +41,8 @@ class LLMRuntimeConfig:
     log_file: Optional[str] = None
     max_concurrent: Optional[int] = None
     model_list: Optional[list[str]] = None
+    extra_body: Optional[Dict[str, Any]] = None
+    reasoning_effort: Optional[str] = None
     source: str = "runtime"
 
     def to_legacy_dict(self) -> Dict[str, Any]:
@@ -63,6 +65,10 @@ class LLMRuntimeConfig:
             data["max_concurrent"] = self.max_concurrent
         if self.model_list:
             data["model_list"] = list(self.model_list)
+        if self.extra_body:
+            data["extra_body"] = dict(self.extra_body)
+        if self.reasoning_effort:
+            data["reasoning_effort"] = self.reasoning_effort
         return data
 
 
@@ -156,6 +162,8 @@ def resolve_runtime_config(
     protocol: Optional[str] = None,
     provider: Optional[str] = None,
     family: Optional[str] = None,
+    extra_body: Optional[Dict[str, Any]] = None,
+    reasoning_effort: Optional[str] = None,
 ) -> LLMRuntimeConfig:
     """
     Resolve a runtime profile.
@@ -231,6 +239,17 @@ def resolve_runtime_config(
     if not resolved_model:
         raise ValueError(f"LLM profile '{resolved_name}' 缺少 default_model/model")
 
+    resolved_extra_body = extra_body if extra_body is not None else profile.get("extra_body")
+    if resolved_extra_body is not None and not isinstance(resolved_extra_body, dict):
+        raise ValueError(
+            f"LLM profile '{resolved_name}' 的 extra_body 必须是 dict，got {type(resolved_extra_body).__name__}"
+        )
+    resolved_reasoning_effort = (
+        reasoning_effort
+        or _env_first([profile.get("reasoning_effort_env"), f"{env_prefix}_REASONING_EFFORT"])
+        or profile.get("reasoning_effort")
+    )
+
     model_list = profile.get("model_list")
     if model_list is not None:
         if not isinstance(model_list, list) or not model_list:
@@ -257,6 +276,8 @@ def resolve_runtime_config(
         if resolved_max_concurrent is not None
         else None,
         model_list=list(model_list) if model_list else None,
+        extra_body=dict(resolved_extra_body) if resolved_extra_body else None,
+        reasoning_effort=str(resolved_reasoning_effort) if resolved_reasoning_effort else None,
         source="runtime",
     )
 
