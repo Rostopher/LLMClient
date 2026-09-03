@@ -941,7 +941,7 @@ class LLMClient:
             print(f"[{response.call_id}] get_json_completion: JSON解析失败 - {e}")
             return None
 
-    async def get_streaming_completion(
+    async def _stream_events(
         self,
         prompt: Optional[str] = None,
         model: Optional[str] = None,
@@ -950,11 +950,15 @@ class LLMClient:
         metadata: Optional[Dict[str, Any]] = None,
         max_tokens: Optional[int] = None,
         messages: Optional[List[Dict[str, str]]] = None,
-    ) -> AsyncGenerator[str, None]:
+    ) -> AsyncGenerator[Tuple[str, str], None]:
         """
-        流式获取LLM完成结果
+        流式调用的内部实现，逐 chunk yield (kind, text) 事件。
 
-        逐 chunk yield delta content。流结束后自动记录 token usage 和成本。
+        kind 取值：
+        - "reasoning": 思考过程片段（delta.reasoning_content，仅思考模式下有）
+        - "content":   正式回答片段（delta.content）
+
+        流结束后自动记录 token usage 和成本（response 只含 content，不含 reasoning）。
 
         Args:
             prompt: 提示词（与 messages 二选一）
@@ -966,7 +970,7 @@ class LLMClient:
             messages: OpenAI messages 数组（优先于 prompt）
 
         Yields:
-            每个 chunk 的文本片段
+            (kind, text) 二元组
         """
         if self.protocol != "openai_chat":
             raise ValueError(f"Streaming 仅支持 openai_chat 协议，当前: {self.protocol}")
@@ -1027,9 +1031,13 @@ class LLMClient:
             async for chunk in stream:
                 if chunk.choices:
                     delta = chunk.choices[0].delta
-                    if delta and delta.content:
-                        full_content.append(delta.content)
-                        yield delta.content
+                    if delta:
+                        reasoning = getattr(delta, "reasoning_content", None)
+                        if reasoning:
+                            yield ("reasoning", reasoning)
+                        if delta.content:
+                            full_content.append(delta.content)
+                            yield ("content", delta.content)
 
                 if hasattr(chunk, 'usage') and chunk.usage:
                     usage = TokenUsageTracker.extract_usage_from_response(chunk)
@@ -1048,7 +1056,7 @@ class LLMClient:
                 )
                 try:
                     fallback_client = self._build_fallback_client(fallback_profile)
-                    async for delta in fallback_client.get_streaming_completion(
+                    async for event in fallback_client._stream_events(
                         prompt=prompt,
                         model=model,
                         temperature=temperature,
@@ -1057,7 +1065,7 @@ class LLMClient:
                         max_tokens=max_tokens,
                         messages=messages,
                     ):
-                        yield delta
+                        yield event
                 except Exception as fallback_error:
                     fallback_classification = classify_llm_error(fallback_error)
                     print(
@@ -1097,6 +1105,67 @@ class LLMClient:
 
         if not error_msg:
             print(f"[{call_id}] Streaming完成 ({duration_ms}ms, {len(content_str)} chars)")
+
+    async def get_streaming_completion(
+        self,
+        prompt: Optional[str] = None,
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        stage: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        max_tokens: Optional[int] = None,
+        messages: Optional[List[Dict[str, str]]] = None,
+    ) -> AsyncGenerator[str, None]:
+        """
+        流式获取LLM完成结果
+
+        逐 chunk yield delta content（思考过程被丢弃）。流结束后自动记录
+        token usage 和成本。需要思考过程时改用 stream_with_reasoning。
+
+        Yields:
+            每个 chunk 的文本片段
+        """
+        async for kind, text in self._stream_events(
+            prompt=prompt,
+            model=model,
+            temperature=temperature,
+            stage=stage,
+            metadata=metadata,
+            max_tokens=max_tokens,
+            messages=messages,
+        ):
+            if kind == "content":
+                yield text
+
+    async def stream_with_reasoning(
+        self,
+        prompt: Optional[str] = None,
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        stage: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        max_tokens: Optional[int] = None,
+        messages: Optional[List[Dict[str, str]]] = None,
+    ) -> AsyncGenerator[Tuple[str, str], None]:
+        """
+        流式获取LLM完成结果，包含思考过程。
+
+        逐 chunk yield (kind, text)：kind 为 "reasoning"（思考片段，
+        仅思考模式下有）或 "content"（正式回答片段）。
+
+        Yields:
+            (kind, text) 二元组
+        """
+        async for event in self._stream_events(
+            prompt=prompt,
+            model=model,
+            temperature=temperature,
+            stage=stage,
+            metadata=metadata,
+            max_tokens=max_tokens,
+            messages=messages,
+        ):
+            yield event
 
     def get_session_summary(self) -> Dict[str, Any]:
         """
