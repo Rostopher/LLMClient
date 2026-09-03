@@ -950,6 +950,7 @@ class LLMClient:
         metadata: Optional[Dict[str, Any]] = None,
         max_tokens: Optional[int] = None,
         messages: Optional[List[Dict[str, str]]] = None,
+        record_sink: Optional[Dict[str, Any]] = None,
     ) -> AsyncGenerator[Tuple[str, str], None]:
         """
         流式调用的内部实现，逐 chunk yield (kind, text) 事件。
@@ -968,6 +969,10 @@ class LLMClient:
             metadata: 额外元数据
             max_tokens: 最大输出 token 数
             messages: OpenAI messages 数组（优先于 prompt）
+            record_sink: 可选的可变 dict，流结束时被 update 为本次调用的完整
+                call_record（含 call_id/usage/cost）。并发调用方应各传各的
+                dict，避免共享 client 实例时互相覆盖。fallback 路径会透传，
+                最终落入的是真正产生 usage 的那次调用记录。
 
         Yields:
             (kind, text) 二元组
@@ -1064,6 +1069,7 @@ class LLMClient:
                         metadata=metadata,
                         max_tokens=max_tokens,
                         messages=messages,
+                        record_sink=record_sink,
                     ):
                         yield event
                 except Exception as fallback_error:
@@ -1102,6 +1108,10 @@ class LLMClient:
 
         if self.tracker:
             self.tracker.log_call_record(call_record)
+
+        if record_sink is not None:
+            record_sink.clear()
+            record_sink.update(call_record)
 
         if not error_msg:
             print(f"[{call_id}] Streaming完成 ({duration_ms}ms, {len(content_str)} chars)")
@@ -1146,12 +1156,16 @@ class LLMClient:
         metadata: Optional[Dict[str, Any]] = None,
         max_tokens: Optional[int] = None,
         messages: Optional[List[Dict[str, str]]] = None,
+        record_sink: Optional[Dict[str, Any]] = None,
     ) -> AsyncGenerator[Tuple[str, str], None]:
         """
         流式获取LLM完成结果，包含思考过程。
 
         逐 chunk yield (kind, text)：kind 为 "reasoning"（思考片段，
         仅思考模式下有）或 "content"（正式回答片段）。
+
+        record_sink：可选可变 dict，流结束时回填本次调用的 call_record
+        （含 usage/cost），供计费落库使用；fallback 时落入实际生效调用的记录。
 
         Yields:
             (kind, text) 二元组
@@ -1164,6 +1178,7 @@ class LLMClient:
             metadata=metadata,
             max_tokens=max_tokens,
             messages=messages,
+            record_sink=record_sink,
         ):
             yield event
 

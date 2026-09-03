@@ -147,3 +147,39 @@ def test_no_reasoning_model_still_works():
 
     events = asyncio.run(_run())
     assert events == [("content", "a"), ("content", "b")]
+
+
+def test_record_sink_filled_after_stream():
+    """record_sink 在流结束时回填 call_record（含 call_id/status），供计费用。"""
+    sink: dict = {}
+
+    async def _run():
+        return [
+            ev
+            async for ev in _make_client(_CHUNKS).stream_with_reasoning(
+                messages=[{"role": "user", "content": "hi"}], record_sink=sink
+            )
+        ]
+
+    events = asyncio.run(_run())
+    assert events[-1] == ("content", "好")
+    assert sink.get("call_id"), f"record_sink 未回填 call_id: {sink}"
+    assert sink.get("status") == "success"
+    assert sink.get("streaming") is True
+    # 并发安全契约：sink 是调用方持有的 dict，client 实例上不应残留状态
+    assert not hasattr(_make_client(_CHUNKS), "last_call_record")
+
+
+def test_record_sink_optional_default_none():
+    """不传 record_sink 时行为与原来一致。"""
+
+    async def _run():
+        return [
+            ev
+            async for ev in _make_client(_CHUNKS).stream_with_reasoning(
+                messages=[{"role": "user", "content": "hi"}]
+            )
+        ]
+
+    events = asyncio.run(_run())
+    assert events[-1] == ("content", "好")
