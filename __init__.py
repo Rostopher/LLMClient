@@ -110,6 +110,10 @@ from .stage_routing import (
     reload_stage_routing,
 )
 
+from .agent_stream_fn import (
+    create_agent_stream_fn,
+)
+
 from .models import (
     ProcurementInfo,
 )
@@ -175,7 +179,7 @@ def create_llm_client(
         safe_fallback_kwargs = {
             key: value
             for key, value in kwargs.items()
-            if key in {"max_retries", "retry_base_delay", "max_concurrent", "config_file", "env_file"}
+            if key in {"max_retries", "retry_base_delay", "max_concurrent", "config_file", "env_file", "backend"}
         }
         return LLMClient(
             api_name=fallback_profile,
@@ -233,6 +237,9 @@ __all__ = [
     "list_stage_routing",
     "load_stage_routing",
     "reload_stage_routing",
+
+    # pi_agent StreamFn 适配器
+    "create_agent_stream_fn",
 
     # 任务管理
     "TaskManager",

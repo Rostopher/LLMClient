@@ -43,6 +43,7 @@ class LLMRuntimeConfig:
     model_list: Optional[list[str]] = None
     extra_body: Optional[Dict[str, Any]] = None
     reasoning_effort: Optional[str] = None
+    backend: str = "native"
     source: str = "runtime"
 
     def to_legacy_dict(self) -> Dict[str, Any]:
@@ -164,6 +165,7 @@ def resolve_runtime_config(
     family: Optional[str] = None,
     extra_body: Optional[Dict[str, Any]] = None,
     reasoning_effort: Optional[str] = None,
+    backend: Optional[str] = None,
 ) -> LLMRuntimeConfig:
     """
     Resolve a runtime profile.
@@ -249,6 +251,17 @@ def resolve_runtime_config(
         or _env_first([profile.get("reasoning_effort_env"), f"{env_prefix}_REASONING_EFFORT"])
         or profile.get("reasoning_effort")
     )
+    resolved_backend = (
+        backend
+        or os.getenv("LLM_BACKEND")
+        or profile.get("backend")
+        or "native"
+    )
+    resolved_backend = str(resolved_backend)
+    if resolved_backend not in {"native", "ppai"}:
+        raise ValueError(
+            f"LLM profile '{resolved_name}' 的 backend 必须是 native/ppai，got {resolved_backend!r}"
+        )
 
     model_list = profile.get("model_list")
     if model_list is not None:
@@ -278,6 +291,7 @@ def resolve_runtime_config(
         model_list=list(model_list) if model_list else None,
         extra_body=dict(resolved_extra_body) if resolved_extra_body else None,
         reasoning_effort=str(resolved_reasoning_effort) if resolved_reasoning_effort else None,
+        backend=resolved_backend,
         source="runtime",
     )
 

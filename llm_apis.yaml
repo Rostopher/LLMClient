@@ -1,5 +1,10 @@
 default_api: deepseek_official_flash
 
+# 每个 profile 支持可选键 `backend: native|ppai`（缺省 = native）。
+# ppai = 通过本地 pp_ai 包（import 名 pi_ai）的 openai-completions 实现收发请求，
+# 计费/记录 schema 与 native 完全一致。也可用环境变量 LLM_BACKEND 全局切换，
+# 优先级：显式参数 > LLM_BACKEND > 此处的 profile 键 > native。
+# 灰度期间不要给任何现有 profile 默认开启 ppai。
 apis:
   yunwu_gpt_4o_chat:
     provider: yunwu

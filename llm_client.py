@@ -84,6 +84,7 @@ class LLMClient:
         max_concurrent: Optional[int] = None,
         extra_body: Optional[Dict[str, Any]] = None,
         reasoning_effort: Optional[str] = None,
+        backend: Optional[str] = None,
     ):
         """
         初始化LLM客户端
@@ -112,6 +113,7 @@ class LLMClient:
                 max_concurrent=max_concurrent,
                 extra_body=extra_body,
                 reasoning_effort=reasoning_effort,
+                backend=backend,
             )
         else:
             runtime_config = resolve_runtime_config(
@@ -132,12 +134,18 @@ class LLMClient:
                 protocol=protocol,
                 provider=provider,
                 family=family,
+                backend=backend,
             )
 
         if runtime_config.protocol not in {"openai_chat", "openai_responses"}:
             raise ValueError(
                 f"LLMClient 只支持 openai_chat/openai_responses，"
                 f"profile '{runtime_config.api_name}' 使用的是 {runtime_config.protocol}"
+            )
+        if runtime_config.backend not in {"native", "ppai"}:
+            raise ValueError(
+                f"LLMClient 只支持 backend native/ppai，"
+                f"profile '{runtime_config.api_name}' 配置的是 {runtime_config.backend!r}"
             )
 
         self.runtime_config = runtime_config
@@ -155,6 +163,7 @@ class LLMClient:
         self.max_concurrent = runtime_config.max_concurrent
         self.extra_body = runtime_config.extra_body
         self.reasoning_effort = runtime_config.reasoning_effort
+        self.backend = runtime_config.backend
         
         # 获取API密钥
         resolved_api_key = runtime_config.api_key
@@ -184,6 +193,7 @@ class LLMClient:
         print(f"   - Profile: {self.api_name}")
         print(f"   - Provider: {self.provider}")
         print(f"   - Protocol: {self.protocol}")
+        print(f"   - Backend: {self.backend}")
         print(f"   - Default Model: {self.default_model}")
         print(f"   - Tracking: {'Enabled' if enable_tracking else 'Disabled'}")
     
@@ -256,6 +266,7 @@ class LLMClient:
             enable_tracking=self.enable_tracking,
             max_retries=self.max_retries,
             retry_base_delay=self.retry_base_delay,
+            backend=self.backend,
         )
 
     def _record_fallback_event(
@@ -433,6 +444,19 @@ class LLMClient:
         Returns:
             LLMResponse对象，包含成功状态、内容、用量、成本等信息
         """
+        if getattr(self, "backend", "native") == "ppai":
+            from . import ppai_backend
+            return await ppai_backend.get_vision_completion(
+                self,
+                prompt=prompt,
+                image_base64=image_base64,
+                model=model,
+                temperature=temperature,
+                stage=stage,
+                metadata=metadata,
+                system_prompt=system_prompt,
+                content_parts=content_parts,
+            )
         # 生成调用ID和开始时间
         call_id = self._generate_call_id()
         timestamp_start = self._get_current_timestamp()
@@ -678,6 +702,20 @@ class LLMClient:
         Returns:
             LLMResponse对象，包含成功状态、内容、用量、成本等信息
         """
+        if getattr(self, "backend", "native") == "ppai":
+            from . import ppai_backend
+            return await ppai_backend.get_completion(
+                self,
+                prompt=prompt,
+                model=model,
+                temperature=temperature,
+                stage=stage,
+                metadata=metadata,
+                max_tokens=max_tokens,
+                system_prompt=system_prompt,
+                extra_body=extra_body,
+                reasoning_effort=reasoning_effort,
+            )
         # 生成调用ID和开始时间
         call_id = self._generate_call_id()
         timestamp_start = self._get_current_timestamp()
@@ -977,6 +1015,21 @@ class LLMClient:
         Yields:
             (kind, text) 二元组
         """
+        if getattr(self, "backend", "native") == "ppai":
+            from . import ppai_backend
+            async for event in ppai_backend.stream_events(
+                self,
+                prompt=prompt,
+                model=model,
+                temperature=temperature,
+                stage=stage,
+                metadata=metadata,
+                max_tokens=max_tokens,
+                messages=messages,
+                record_sink=record_sink,
+            ):
+                yield event
+            return
         if self.protocol != "openai_chat":
             raise ValueError(f"Streaming 仅支持 openai_chat 协议，当前: {self.protocol}")
 
