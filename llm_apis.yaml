@@ -73,6 +73,17 @@ apis:
     max_retries: 5
     retry_base_delay: 1
 
+  openlux_gemini_38_flash_chat:
+    provider: openlux
+    family: gemini
+    protocol: openai_chat
+    base_url: https://api.openlux.ai/v1
+    api_key_env: OPENLUX_API_KEY
+    default_model: gemini-3.8-flash
+    temperature: 0.7
+    max_retries: 5
+    retry_base_delay: 1
+
   yunwu_gemini_25_pro_chat:
     provider: yunwu
     family: gemini
