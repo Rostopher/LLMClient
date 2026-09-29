@@ -14,7 +14,7 @@ import time
 import contextvars
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, asdict
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 
 @dataclass
@@ -46,6 +46,23 @@ class ModelPricing:
     completion_multiplier: float = 1.0
     cache_hit_input_price_per_million: float = 0.0
     currency: str = "USD"
+    # 高峰时段（北京时间工作日 9:00-12:00、14:00-18:00）三项单价统一乘以该系数；
+    # 1.0 表示该模型无峰谷价差
+    peak_multiplier: float = 1.0
+
+
+_BEIJING_TZ = timezone(timedelta(hours=8))
+# DeepSeek 官方峰谷计费：工作日北京时间 9:00-12:00 与 14:00-18:00 为高峰，
+# 其余时段（含周末全天）为空闲价，高峰三项单价均为空闲的 2 倍。
+_DEEPSEEK_PEAK_HOURS = ((9, 12), (14, 18))
+
+
+def is_deepseek_peak_hour(at: Optional[datetime] = None) -> bool:
+    """判断给定时刻（默认当前）是否落在 DeepSeek 高峰计费窗口。"""
+    at = (at or datetime.now(_BEIJING_TZ)).astimezone(_BEIJING_TZ)
+    if at.weekday() >= 5:
+        return False
+    return any(start <= at.hour < end for start, end in _DEEPSEEK_PEAK_HOURS)
 
 
 class ModelPricingConfig:
@@ -114,28 +131,46 @@ class ModelPricingConfig:
                 multiplier=0.275,
                 completion_multiplier=3.98
             ),
+            # Flash 系列现行价（DeepSeek 官方 2026-09-10 调价，空闲时段：
+            # 缓存未命中 ¥1.0 / 缓存命中 ¥0.02 / 输出 ¥4.0 每百万 token；
+            # 工作日高峰三项 ×2）。deepseek-flash 是 V4.1 Flash 的官方 API 名；
+            # v4-flash / v4-flash-vision-exp 已停售为独立产品，但请求路由到
+            # V4.1 Flash 并按同一价目计费。缺 deepseek-flash 条目会落入 default
+            # 兜底（USD $1/$3 且缓存无折扣），成本被高估十几倍（2026-09-29 实发）。
+            "deepseek-flash": ModelPricing(
+                model_name="deepseek-flash",
+                input_price_per_million=1.0,
+                output_price_per_million=4.0,
+                cache_hit_input_price_per_million=0.02,
+                currency="CNY",
+                peak_multiplier=2.0,
+            ),
             "deepseek-v4-flash": ModelPricing(
                 model_name="deepseek-v4-flash",
                 input_price_per_million=1.0,
-                output_price_per_million=2.0,
+                output_price_per_million=4.0,
                 cache_hit_input_price_per_million=0.02,
                 currency="CNY",
+                peak_multiplier=2.0,
             ),
-            # 视觉版与 v4-flash 逐格同价（官方口径，2026-08-21 上线）；
-            # 缺此条目会落入 default 兜底（USD $1/$3），成本被高估约 7 倍
             "deepseek-v4-flash-vision-exp": ModelPricing(
                 model_name="deepseek-v4-flash-vision-exp",
                 input_price_per_million=1.0,
-                output_price_per_million=2.0,
+                output_price_per_million=4.0,
                 cache_hit_input_price_per_million=0.02,
                 currency="CNY",
+                peak_multiplier=2.0,
             ),
+            # V4-Pro 现行价（DeepSeek 官方 2026-08-17 峰谷调价，空闲时段：
+            # 缓存未命中 ¥4.5 / 缓存命中 ¥0.15 / 输出 ¥13.5 每百万 token；
+            # 高峰三项 ×2，即 ¥9 / ¥0.3 / ¥27）。
             "deepseek-v4-pro": ModelPricing(
                 model_name="deepseek-v4-pro",
-                input_price_per_million=3.0,
-                output_price_per_million=6.0,
-                cache_hit_input_price_per_million=0.025,
+                input_price_per_million=4.5,
+                output_price_per_million=13.5,
+                cache_hit_input_price_per_million=0.15,
                 currency="CNY",
+                peak_multiplier=2.0,
             ),
             "default": ModelPricing(
                 model_name="default",
@@ -181,27 +216,36 @@ class ModelPricingConfig:
                       usage: TokenUsage,
                       model_name: str,
                       provider: str = "unknown",
-                      group_discount: float = 1.0) -> Dict[str, float]:
+                      group_discount: float = 1.0,
+                      at: Optional[datetime] = None) -> Dict[str, float]:
         """
         计算成本（支持多供应商）
 
         云雾计费公式：按量计费费用 = 令牌分组折扣 × 模型倍率 × （提示token数 + 补全token数 × 补全倍率）/ 500000
         标准计费公式：成本 = (输入tokens / 1M × 输入单价) + (输出tokens / 1M × 输出单价)
         DeepSeek缓存计费：成本 = (缓存命中tokens / 1M × 缓存命中单价) + (缓存未命中tokens / 1M × 输入单价) + (输出tokens / 1M × 输出单价)
+        DeepSeek峰谷计费：peak_multiplier > 1 的模型，高峰时段（北京时间工作日
+        9:00-12:00、14:00-18:00）三项单价乘以该系数；at 缺省取调用时刻。
         """
         config = self.get_model_config(model_name, provider=provider)
 
+        peak_applied = config.peak_multiplier != 1.0 and is_deepseek_peak_hour(at)
+        price_factor = config.peak_multiplier if peak_applied else 1.0
+        input_price = config.input_price_per_million * price_factor
+        output_price = config.output_price_per_million * price_factor
+        cache_hit_price = config.cache_hit_input_price_per_million * price_factor
+
         has_cache_info = (usage.prompt_cache_hit_tokens > 0 or usage.prompt_cache_miss_tokens > 0)
 
-        if has_cache_info and config.cache_hit_input_price_per_million > 0:
-            cache_hit_cost = (usage.prompt_cache_hit_tokens * config.cache_hit_input_price_per_million) / 1_000_000
-            cache_miss_cost = (usage.prompt_cache_miss_tokens * config.input_price_per_million) / 1_000_000
+        if has_cache_info and cache_hit_price > 0:
+            cache_hit_cost = (usage.prompt_cache_hit_tokens * cache_hit_price) / 1_000_000
+            cache_miss_cost = (usage.prompt_cache_miss_tokens * input_price) / 1_000_000
             input_cost = cache_hit_cost + cache_miss_cost
-            output_cost = (usage.completion_tokens * config.output_price_per_million) / 1_000_000
+            output_cost = (usage.completion_tokens * output_price) / 1_000_000
             standard_cost = input_cost + output_cost
         else:
-            input_cost = (usage.prompt_tokens * config.input_price_per_million) / 1_000_000
-            output_cost = (usage.completion_tokens * config.output_price_per_million) / 1_000_000
+            input_cost = (usage.prompt_tokens * input_price) / 1_000_000
+            output_cost = (usage.completion_tokens * output_price) / 1_000_000
             standard_cost = input_cost + output_cost
             cache_hit_cost = 0.0
             cache_miss_cost = 0.0
@@ -220,6 +264,7 @@ class ModelPricingConfig:
             "group_discount": group_discount,
             "provider": provider,
             "currency": config.currency,
+            "peak_pricing_applied": peak_applied,
         }
 
         if has_cache_info:
