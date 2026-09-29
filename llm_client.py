@@ -164,6 +164,7 @@ class LLMClient:
         self.extra_body = runtime_config.extra_body
         self.reasoning_effort = runtime_config.reasoning_effort
         self.backend = runtime_config.backend
+        self.vision = getattr(runtime_config, 'vision', False)
         
         # 获取API密钥
         resolved_api_key = runtime_config.api_key

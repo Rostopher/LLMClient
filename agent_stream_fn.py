@@ -261,7 +261,7 @@ async def _pump(
                 "metadata": dict(base_metadata),
             }
 
-            model_obj = ppai_backend._resolve_model(attempt_client, model_name)
+            model_obj = ppai_backend._resolve_model(attempt_client, model_name, vision=getattr(attempt_client, 'vision', False))
             pi_options = ppai_backend._build_options(
                 attempt_client,
                 temperature=temperature_eff,
@@ -370,7 +370,7 @@ async def _pump(
         classification = classify_llm_error(exc)
         if not out.done:
             try:
-                model_obj = ppai_backend._resolve_model(attempt_client, model_name)
+                model_obj = ppai_backend._resolve_model(attempt_client, model_name, vision=getattr(attempt_client, 'vision', False))
                 message = _error_message_from_exception(pi_ai, model_obj, exc, classification)
                 out.push(pi_ai.ErrorEvent(reason="error", error=message))
             except Exception:

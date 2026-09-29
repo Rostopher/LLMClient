@@ -44,6 +44,7 @@ class LLMRuntimeConfig:
     extra_body: Optional[Dict[str, Any]] = None
     reasoning_effort: Optional[str] = None
     backend: str = "native"
+    vision: bool = False
     source: str = "runtime"
 
     def to_legacy_dict(self) -> Dict[str, Any]:
@@ -263,6 +264,12 @@ def resolve_runtime_config(
             f"LLM profile '{resolved_name}' 的 backend 必须是 native/ppai，got {resolved_backend!r}"
         )
 
+    resolved_vision_raw = _env_first([profile.get("vision_env"), f"{env_prefix}_VISION"])
+    if resolved_vision_raw is not None:
+        resolved_vision = str(resolved_vision_raw).strip().lower() in {"1", "true", "yes", "on"}
+    else:
+        resolved_vision = bool(profile.get("vision", False))
+
     model_list = profile.get("model_list")
     if model_list is not None:
         if not isinstance(model_list, list) or not model_list:
@@ -292,6 +299,7 @@ def resolve_runtime_config(
         extra_body=dict(resolved_extra_body) if resolved_extra_body else None,
         reasoning_effort=str(resolved_reasoning_effort) if resolved_reasoning_effort else None,
         backend=resolved_backend,
+        vision=resolved_vision,
         source="runtime",
     )
 
