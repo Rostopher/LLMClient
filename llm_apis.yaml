@@ -211,5 +211,9 @@ stage_routing:
     temperature: 0.3
   chat_interaction:
     api: deepseek_official_flash_vision
-    model: deepseek-v4-flash-vision-exp
+    # deepseek-flash 即 deepseek-v4.1-flash（API 官方支持名，实测报错原文：
+    # "The supported API model names are deepseek-flash, deepseek-v4-pro"），
+    # 原生多模态模型，可直接接受图片+文本输入（已实测带图读取正确）。
+    # deepseek-v4-flash / deepseek-v4-flash-vision-exp 是同模型的历史别名。
+    model: deepseek-flash
     temperature: 0.7
