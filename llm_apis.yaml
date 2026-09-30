@@ -201,11 +201,19 @@ stage_routing:
     api: deepseek_official_flash
     model: deepseek-v4-flash
     temperature: 0.7
+  share_card_summary:
+    api: deepseek_official_flash
+    model: deepseek-v4-flash
+    temperature: 0.3
   deep_report_generation:
     api: deepseek_official_flash
     model: deepseek-v4-flash
     temperature: 0.7
   translation:
+    api: deepseek_official_flash
+    model: deepseek-v4-flash
+    temperature: 0.3
+  translation_glossary:
     api: deepseek_official_flash
     model: deepseek-v4-flash
     temperature: 0.3
