@@ -137,6 +137,27 @@ def test_provider_overloaded_marker_is_fallback_eligible():
     assert result.fallback_eligible is True
 
 
+def test_deepseek_service_busy_is_fallback_eligible():
+    # DeepSeek 官方过载实测报错（2026-10-15 11:03，故障窗口内复发）
+    result = classify_llm_error(
+        FakeAPIError(
+            "service_unavailable_error Service is too busy",
+            status_code=503,
+            body={
+                "error": {
+                    "type": "service_unavailable_error",
+                    "message": "Service is too busy. We advise users to temporarily "
+                    "switch to alternative LLM API service providers.",
+                }
+            },
+        )
+    )
+
+    assert result.kind == "provider_queue_timeout"
+    assert result.retryable is True
+    assert result.fallback_eligible is True
+
+
 def test_missing_api_key_configuration_is_auth_related():
     result = classify_llm_error(ValueError("缺少API密钥，请为 profile opencode_go_deepseek_pro 配置 api_key"))
 

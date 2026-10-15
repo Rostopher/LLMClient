@@ -199,6 +199,8 @@ def classify_llm_error(error: BaseException) -> LLMErrorClassification:
             "unable to start processing your request",
             "engine is overloaded",
             "model is overloaded",
+            "service is too busy",
+            "service_unavailable",
             "queue timeout",
             "排队超时",
         )
