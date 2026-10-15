@@ -164,7 +164,8 @@ apis:
     retry_base_delay: 1
 
   # magua 网关（new-api 风格），2026-10-15 接入，定位为 DeepSeek 官方故障
-  # （排队超时/异常响应）时 deepseek_official_flash 的 fallback，不作主力路由：
+  # （排队超时/过载/异常响应）时 deepseek_official_flash 与
+  # deepseek_official_flash_vision 的 fallback，不作主力路由：
   # 官方 context caching 不经过该网关，成本与缓存计量口径不同。
   # 注意：该网关 deepseek-v4.1-flash 的非流式聚合有缺陷（固定 500
   # "ClinePass: empty response content"），必须走流式，故 force_stream: true；
@@ -180,6 +181,9 @@ apis:
       deepseek-v4-flash: deepseek-v4.1-flash
       deepseek-flash: deepseek-v4.1-flash
     force_stream: true
+    # 2026-10-15 实测多模态可用（正确读出测试图图形与文字）；
+    # vision: true 让 agent 链路（ppai _resolve_model）放行图片输入
+    vision: true
     temperature: 0.7
     max_retries: 5
     retry_base_delay: 1

@@ -64,6 +64,7 @@ class LLMClient:
         "opencode_go_deepseek_pro": "deepseek_official_chat",
         "opencode_go_deepseek_flash": "deepseek_official_flash",
         "deepseek_official_flash": "magua_deepseek_flash",
+        "deepseek_official_flash_vision": "magua_deepseek_flash",
     }
     
     def __init__(

@@ -273,6 +273,38 @@ def test_unexpected_response_format_without_mapping_does_not_fallback():
     assert response.error_classification["kind"] == "unexpected_response"
 
 
+def test_vision_queue_timeout_redirects_to_magua():
+    error = FakeAPIError(
+        "We were unable to start processing your request within the 900-second "
+        "timeout limit. Please try again later.",
+        None,
+        {"message": "We were unable to start processing your request within "
+        "the 900-second timeout limit. Please try again later."},
+    )
+    client = _client_with_failure(error, api_name="deepseek_official_flash_vision")
+    client.provider = "deepseek_official"
+
+    fallback = SimpleNamespace(
+        get_vision_completion=lambda **kwargs: asyncio.sleep(
+            0, result=LLMResponse(success=True, content="magua vision answer"),
+        )
+    )
+    requested = []
+
+    def build_fallback(profile):
+        requested.append(profile)
+        return fallback
+
+    client._build_fallback_client = build_fallback
+    response = asyncio.run(client.get_vision_completion(prompt="hello", image_base64="AAAA"))
+
+    assert response.success is True
+    assert response.content == "magua vision answer"
+    assert response.fallback_used is True
+    assert response.fallback_from == "deepseek_official_flash_vision"
+    assert requested == ["magua_deepseek_flash"]
+
+
 class FakeStreamCompletions:
     """记录请求参数并返回假流式 chunk 序列。"""
 
