@@ -137,9 +137,9 @@ def test_streaming_api_key_error_redirects_before_final_record():
     client = _client_with_failure(error)
 
     class Fallback:
-        async def get_streaming_completion(self, **kwargs):
-            yield "official"
-            yield " stream"
+        async def _stream_events(self, **kwargs):
+            yield ("content", "official")
+            yield ("content", " stream")
 
     client._build_fallback_client = lambda profile: Fallback()
 
@@ -173,3 +173,154 @@ def test_factory_redirects_when_go_key_is_missing(monkeypatch):
         "opencode_go_deepseek_flash",
         "deepseek_official_flash",
     ]
+
+
+def _magua_fallback_spy(content="magua answer"):
+    fallback = SimpleNamespace(
+        get_completion=lambda **kwargs: asyncio.sleep(
+            0, result=LLMResponse(success=True, content=content),
+        )
+    )
+    requested = []
+
+    def build_fallback(profile):
+        requested.append(profile)
+        return fallback
+
+    return requested, build_fallback
+
+
+def test_queue_timeout_on_official_flash_redirects_to_magua():
+    error = FakeAPIError(
+        "We were unable to start processing your request within the 900-second "
+        "timeout limit. Please try again later.",
+        None,
+        {
+            "message": "We were unable to start processing your request within "
+            "the 900-second timeout limit. Please try again later."
+        },
+    )
+    client = _client_with_failure(error, api_name="deepseek_official_flash")
+    client.provider = "deepseek_official"
+
+    requested, build_fallback = _magua_fallback_spy()
+    client._build_fallback_client = build_fallback
+    response = asyncio.run(client.get_completion("hello"))
+
+    assert response.success is True
+    assert response.content == "magua answer"
+    assert response.fallback_used is True
+    assert response.fallback_from == "deepseek_official_flash"
+    assert response.fallback_reason == "provider_queue_timeout"
+    assert requested == ["magua_deepseek_flash"]
+
+
+class BadFormatCompletions:
+    """模拟供应商排队超时后返回 200 但无 choices 的异常响应体。"""
+
+    async def create(self, **kwargs):
+        return SimpleNamespace(choices=[], usage=None)
+
+
+class EmptyCompletions:
+    async def create(self, **kwargs):
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=""))],
+            usage=None,
+        )
+
+
+def test_unexpected_response_format_redirects_to_magua():
+    client = _client_with_failure(None, api_name="deepseek_official_flash")
+    client.provider = "deepseek_official"
+    client.client = SimpleNamespace(chat=SimpleNamespace(completions=BadFormatCompletions()))
+
+    requested, build_fallback = _magua_fallback_spy()
+    client._build_fallback_client = build_fallback
+    response = asyncio.run(client.get_completion("hello"))
+
+    assert response.success is True
+    assert response.fallback_used is True
+    assert response.fallback_reason == "unexpected_response"
+    assert requested == ["magua_deepseek_flash"]
+
+
+def test_empty_response_retries_then_redirects_to_magua():
+    client = _client_with_failure(None, api_name="deepseek_official_flash")
+    client.provider = "deepseek_official"
+    client.client = SimpleNamespace(chat=SimpleNamespace(completions=EmptyCompletions()))
+    client.max_retries = 0  # 直接走到最后一次重试仍为空的分支
+
+    requested, build_fallback = _magua_fallback_spy()
+    client._build_fallback_client = build_fallback
+    response = asyncio.run(client.get_completion("hello"))
+
+    assert response.success is True
+    assert response.fallback_used is True
+    assert response.fallback_reason == "empty_response"
+    assert requested == ["magua_deepseek_flash"]
+
+
+def test_unexpected_response_format_without_mapping_does_not_fallback():
+    client = _client_with_failure(None, api_name="magua_deepseek_flash")
+    client.provider = "magua"
+    client.client = SimpleNamespace(chat=SimpleNamespace(completions=BadFormatCompletions()))
+
+    response = asyncio.run(client.get_completion("hello"))
+
+    assert response.success is False
+    assert response.fallback_used is False
+    assert response.error_classification["kind"] == "unexpected_response"
+
+
+class FakeStreamCompletions:
+    """记录请求参数并返回假流式 chunk 序列。"""
+
+    def __init__(self, chunks):
+        self.chunks = chunks
+        self.captured = {}
+
+    async def create(self, **kwargs):
+        self.captured.update(kwargs)
+        chunks = self.chunks
+
+        class _Stream:
+            def __aiter__(self_):
+                async def gen():
+                    for chunk in chunks:
+                        yield chunk
+
+                return gen()
+
+        return _Stream()
+
+
+def test_force_stream_aggregates_stream_for_get_completion():
+    client = _client_with_failure(None, api_name="magua_deepseek_flash")
+    client.provider = "magua"
+    client.force_stream = True
+    client.model_aliases = {"deepseek-v4-flash": "deepseek-v4.1-flash"}
+    chunks = [
+        SimpleNamespace(
+            choices=[SimpleNamespace(delta=SimpleNamespace(role="assistant", content=None))],
+            usage=None,
+        ),
+        SimpleNamespace(
+            choices=[SimpleNamespace(delta=SimpleNamespace(reasoning_content="想", content="你好"))],
+            usage=None,
+        ),
+        SimpleNamespace(
+            choices=[SimpleNamespace(delta=SimpleNamespace(reasoning_content=None, content="，世界"))],
+            usage=None,
+        ),
+        SimpleNamespace(choices=[], usage=None),
+    ]
+    completions = FakeStreamCompletions(chunks)
+    client.client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+
+    response = asyncio.run(client.get_completion("hi", model="deepseek-v4-flash"))
+
+    assert response.success is True
+    assert response.content == "你好，世界"
+    assert completions.captured["stream"] is True
+    assert completions.captured["model"] == "deepseek-v4.1-flash"

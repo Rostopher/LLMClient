@@ -791,7 +791,7 @@ async def stream_events(
             )
             print(
                 f"[{call_id}] 检测到 {classification.kind}，"
-                f"切换官方 DeepSeek profile: {fallback_profile}"
+                f"切换 fallback profile: {fallback_profile}"
             )
             try:
                 fallback_client = client._build_fallback_client(fallback_profile)

@@ -15,7 +15,7 @@
 - 契约：返回的 callable 符合 pi_agent ``StreamFn``——绝不抛异常，失败编码为流内
   error 事件 + ``stop_reason="error"/"aborted"`` 的终止消息。
 - fallback：终止消息 ``stop_reason="error"`` 且错误分类 fallback_eligible
-  （auth/quota）且当前 profile 在 ``LLMClient._API_KEY_FALLBACK_PROFILES`` 里 →
+  （auth/quota/供应商排队超时等）且当前 profile 在 ``LLMClient._API_KEY_FALLBACK_PROFILES`` 里 →
   透明切换 fallback profile 重新流式（只切换一次，不重试），语义对齐
   ``ppai_backend.stream_events`` 的流式 fallback。
 - 工具透传：``context.tools`` 原样交给 pi_ai，13 种 AssistantMessageEvent 原样

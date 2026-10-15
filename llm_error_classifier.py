@@ -138,8 +138,10 @@ def _is_timeout(error: BaseException) -> bool:
 def classify_llm_error(error: BaseException) -> LLMErrorClassification:
     """分类 OpenAI SDK、OpenCode Go 或普通网络异常。
 
-    ``fallback_eligible`` 仅表示“可尝试官方 DeepSeek”，并不表示所有 4xx
+    ``fallback_eligible`` 表示“可尝试切换到 fallback profile”（方向由
+    ``LLMClient._API_KEY_FALLBACK_PROFILES`` 决定），并不表示所有 4xx
     都应该切换供应商：配额、限流、参数错误和区域限制会被明确区分。
+    供应商侧排队超时/过载（请求未被处理）也允许 fallback。
     """
 
     raw_message = _sanitize(str(error) or error.__class__.__name__)
@@ -189,7 +191,29 @@ def classify_llm_error(error: BaseException) -> LLMErrorClassification:
             "usage limit", "usage exceeded", "credits exhausted", "balance exhausted",
         )
     )
+    # 供应商侧排队超时/过载：请求未被处理（如 DeepSeek 官方 900 秒队列上限），
+    # 重试同一家大概率再次排队，允许直接 fallback 到备用供应商。
+    queue_timeout_hint = any(
+        marker in lowered
+        for marker in (
+            "unable to start processing your request",
+            "engine is overloaded",
+            "model is overloaded",
+            "queue timeout",
+            "排队超时",
+        )
+    )
 
+    if queue_timeout_hint:
+        return LLMErrorClassification(
+            kind="provider_queue_timeout",
+            message=detail_text,
+            status_code=status,
+            provider_error_type=_sanitize(provider_error_type) if provider_error_type else None,
+            retryable=True,
+            fallback_eligible=True,
+            response_body=body_text,
+        )
     if status == 401 or (status is None and auth_hint):
         return LLMErrorClassification(
             kind="api_key_error",

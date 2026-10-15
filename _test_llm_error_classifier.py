@@ -106,6 +106,37 @@ def test_connection_and_timeout_are_distinguished():
     assert timeout.retryable is True
 
 
+def test_provider_queue_timeout_is_retryable_and_fallback_eligible():
+    # DeepSeek 官方排队 900 秒上限的实测报错（2026-10-15 故障窗口）
+    result = classify_llm_error(
+        FakeAPIError(
+            "We were unable to start processing your request within the 900-second "
+            "timeout limit. Please try again later.",
+            body={
+                "message": "We were unable to start processing your request within "
+                "the 900-second timeout limit. Please try again later."
+            },
+        )
+    )
+
+    assert result.kind == "provider_queue_timeout"
+    assert result.retryable is True
+    assert result.fallback_eligible is True
+
+
+def test_provider_overloaded_marker_is_fallback_eligible():
+    result = classify_llm_error(
+        FakeAPIError(
+            "service unavailable",
+            status_code=503,
+            body={"error": {"type": "api_error", "message": "model is overloaded"}},
+        )
+    )
+
+    assert result.kind == "provider_queue_timeout"
+    assert result.fallback_eligible is True
+
+
 def test_missing_api_key_configuration_is_auth_related():
     result = classify_llm_error(ValueError("缺少API密钥，请为 profile opencode_go_deepseek_pro 配置 api_key"))
 

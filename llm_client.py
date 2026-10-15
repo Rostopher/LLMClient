@@ -56,11 +56,14 @@ class LLMClient:
     - 支持多供应商配置
     """
 
-    # OpenCode Go 的 API-key/auth 错误和明确额度耗尽切换到官方 DeepSeek；
-    # 普通限流、连接和服务端错误不会静默改走另一家供应商。
+    # 供应商级 fallback 映射：当前 profile 失败且错误分类 fallback_eligible
+    # （auth/quota/供应商排队超时等）时切换到目标 profile 重试一次。
+    # 方向是双向的：opencode_go 故障 → 官方 DeepSeek；官方 DeepSeek 故障 → magua 网关。
+    # 普通限流、连接错误和服务端 5xx 不会静默改走另一家供应商。
     _API_KEY_FALLBACK_PROFILES = {
         "opencode_go_deepseek_pro": "deepseek_official_chat",
         "opencode_go_deepseek_flash": "deepseek_official_flash",
+        "deepseek_official_flash": "magua_deepseek_flash",
     }
     
     def __init__(
@@ -165,6 +168,8 @@ class LLMClient:
         self.reasoning_effort = runtime_config.reasoning_effort
         self.backend = runtime_config.backend
         self.vision = getattr(runtime_config, 'vision', False)
+        self.force_stream = getattr(runtime_config, 'force_stream', False)
+        self.model_aliases = getattr(runtime_config, 'model_aliases', None) or {}
         
         # 获取API密钥
         resolved_api_key = runtime_config.api_key
@@ -213,6 +218,17 @@ class LLMClient:
         temperature = route.get("temperature")
         return cls(api_name=api_name, model=model, temperature=temperature, **kwargs)
     
+    def _resolve_model_name(self, model: Optional[str]) -> str:
+        """解析最终请求的模型名，并套用 profile 级 model_aliases 映射。
+
+        fallback 场景下调用方会把原供应商的模型名透传过来（如
+        deepseek-v4-flash），目标网关可能使用不同的模型 ID，
+        由 profile 的 model_aliases 负责翻译。
+        """
+        name = model or self.default_model
+        aliases = getattr(self, "model_aliases", None) or {}
+        return aliases.get(name, name)
+
     def _apply_thinking_kwargs(
         self,
         create_kwargs: Dict[str, Any],
@@ -249,7 +265,7 @@ class LLMClient:
         return datetime.utcnow().isoformat() + 'Z'
 
     def _fallback_profile_for_error(self, classification: LLMErrorClassification) -> Optional[str]:
-        """返回当前 profile 对应的官方 fallback；非认证错误返回 None。"""
+        """返回当前 profile 对应的 fallback profile；不可 fallback 的错误返回 None。"""
         if not classification.fallback_eligible:
             return None
         return self._API_KEY_FALLBACK_PROFILES.get(self.api_name)
@@ -260,7 +276,7 @@ class LLMClient:
         return self.runtime_config.log_file
 
     def _build_fallback_client(self, profile_name: str) -> "LLMClient":
-        """创建官方 profile 客户端，不继承 OpenCode 的 endpoint/key。"""
+        """创建 fallback profile 客户端，不继承原供应商的 endpoint/key。"""
         return LLMClient.from_profile(
             profile_name,
             log_file=self._fallback_log_file(),
@@ -315,7 +331,7 @@ class LLMClient:
             return None
         print(
             f"[{self.api_name}] 检测到 {classification.kind}，"
-            f"切换官方 DeepSeek profile: {fallback_profile}"
+            f"切换 fallback profile: {fallback_profile}"
         )
         try:
             fallback_client = self._build_fallback_client(fallback_profile)
@@ -367,7 +383,7 @@ class LLMClient:
             return None
         print(
             f"[{self.api_name}] 检测到 {classification.kind}，"
-            f"切换官方 DeepSeek profile: {fallback_profile}"
+            f"切换 fallback profile: {fallback_profile}"
         )
         try:
             fallback_client = self._build_fallback_client(fallback_profile)
@@ -464,7 +480,7 @@ class LLMClient:
         start_time = asyncio.get_event_loop().time()
 
         # 确定最终使用的参数
-        model_name = model or self.default_model
+        model_name = self._resolve_model_name(model)
         temperature_effective = (
             temperature
             if temperature is not None
@@ -600,15 +616,38 @@ class LLMClient:
                 )
                 
             except ValueError as e:
-                # 空响应或格式错误
-                if "Empty response from LLM" in str(e):
+                # 空响应或格式错误（供应商异常输出）
+                is_empty = "Empty response from LLM" in str(e)
+                if is_empty:
                     last_error = f"空响应: {str(e)}"
                     print(f"[{call_id}] ⚠️ 收到空响应，重试中...")
                 else:
                     last_error = f"值错误: {str(e)}"
                     print(f"[{call_id}] ❌ 值错误: {e}")
-                    break  # 格式错误不重试
-                
+
+                classification = self._classify_value_error(e, retries)
+                if classification is not None:
+                    last_classification = classification
+                    fallback_profile = self._fallback_profile_for_error(classification)
+                    if fallback_profile:
+                        fallback_response = await self._run_vision_fallback(
+                            classification,
+                            prompt=prompt,
+                            image_base64=image_base64,
+                            model=model,
+                            temperature=temperature,
+                            stage=stage,
+                            metadata=metadata,
+                            system_prompt=system_prompt,
+                            content_parts=content_parts,
+                        )
+                        self._record_fallback_event(
+                            call_record, classification, fallback_profile, retries, start_time
+                        )
+                        return fallback_response
+                if not is_empty:
+                    break  # 格式错误不重试（无 fallback 可用时）
+
             except Exception as e:
                 classification = classify_llm_error(e)
                 last_classification = classification
@@ -678,6 +717,80 @@ class LLMClient:
             error_classification=last_classification.to_dict() if last_classification else None,
         )
     
+    async def _get_completion_via_stream(
+        self,
+        prompt: str,
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        stage: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        max_tokens: Optional[int] = None,
+        system_prompt: Optional[str] = None,
+    ) -> LLMResponse:
+        """force_stream profile 的非流式接口实现：内部走流式并聚合 content。
+
+        用于非流式聚合有缺陷的网关（如 magua 的 deepseek-v4.1-flash，非流式
+        固定 500 "empty response content"）。usage/cost/调用记录由
+        _stream_events 落盘，这里只组装 LLMResponse，不重复记录。
+        """
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        sink: Dict[str, Any] = {}
+        parts: list = []
+        async for kind, text in self._stream_events(
+            model=model,
+            temperature=temperature,
+            stage=stage,
+            metadata=metadata,
+            max_tokens=max_tokens,
+            messages=messages,
+            record_sink=sink,
+        ):
+            if kind == "content":
+                parts.append(text)
+
+        content = "".join(parts)
+        error_msg = sink.get("error")
+        if not error_msg and not content.strip():
+            error_msg = "空响应: Empty response from LLM"
+        return LLMResponse(
+            success=error_msg is None,
+            content=content,
+            usage=None,
+            cost=sink.get("cost"),
+            error=error_msg,
+            call_id=sink.get("call_id"),
+            duration_ms=sink.get("duration_ms"),
+            error_classification=sink.get("error_classification"),
+        )
+
+    def _classify_value_error(self, error: ValueError, retries: int) -> Optional[LLMErrorClassification]:
+        """空响应/异常响应格式归为供应商异常输出，决定是否允许 fallback。
+
+        空响应先按既有行为重试原供应商，最后一次重试仍为空才允许 fallback；
+        响应格式异常（如 200 但无 choices——DeepSeek 排队 900 秒后的典型
+        表现）直接允许 fallback。
+        """
+        text = str(error)
+        if "Empty response from LLM" in text:
+            if retries < self.max_retries:
+                return None
+            return LLMErrorClassification(
+                kind="empty_response",
+                message=text,
+                retryable=False,
+                fallback_eligible=True,
+            )
+        return LLMErrorClassification(
+            kind="unexpected_response",
+            message=text,
+            retryable=False,
+            fallback_eligible=True,
+        )
+
     async def get_completion(
         self,
         prompt: str,
@@ -717,13 +830,23 @@ class LLMClient:
                 extra_body=extra_body,
                 reasoning_effort=reasoning_effort,
             )
+        if getattr(self, "force_stream", False) and self.protocol == "openai_chat":
+            return await self._get_completion_via_stream(
+                prompt=prompt,
+                model=model,
+                temperature=temperature,
+                stage=stage,
+                metadata=metadata,
+                max_tokens=max_tokens,
+                system_prompt=system_prompt,
+            )
         # 生成调用ID和开始时间
         call_id = self._generate_call_id()
         timestamp_start = self._get_current_timestamp()
         start_time = asyncio.get_event_loop().time()
         
         # 确定最终使用的参数
-        model_name = model or self.default_model
+        model_name = self._resolve_model_name(model)
         temperature_effective = (
             temperature
             if temperature is not None
@@ -856,15 +979,37 @@ class LLMClient:
                 )
                 
             except ValueError as e:
-                # 空响应或格式错误
-                if "Empty response from LLM" in str(e):
+                # 空响应或格式错误（供应商异常输出）
+                is_empty = "Empty response from LLM" in str(e)
+                if is_empty:
                     last_error = f"空响应: {str(e)}"
                     print(f"[{call_id}] ⚠️ 收到空响应，重试中...")
                 else:
                     last_error = f"值错误: {str(e)}"
                     print(f"[{call_id}] ❌ 值错误: {e}")
-                    break  # 格式错误不重试
-                
+
+                classification = self._classify_value_error(e, retries)
+                if classification is not None:
+                    last_classification = classification
+                    fallback_profile = self._fallback_profile_for_error(classification)
+                    if fallback_profile:
+                        fallback_response = await self._run_completion_fallback(
+                            classification,
+                            prompt=prompt,
+                            model=model,
+                            temperature=temperature,
+                            stage=stage,
+                            metadata=metadata,
+                            max_tokens=max_tokens,
+                            system_prompt=system_prompt,
+                        )
+                        self._record_fallback_event(
+                            call_record, classification, fallback_profile, retries, start_time
+                        )
+                        return fallback_response
+                if not is_empty:
+                    break  # 格式错误不重试（无 fallback 可用时）
+
             except Exception as e:
                 classification = classify_llm_error(e)
                 last_classification = classification
@@ -1041,7 +1186,7 @@ class LLMClient:
         timestamp_start = self._get_current_timestamp()
         start_time = asyncio.get_event_loop().time()
 
-        model_name = model or self.default_model
+        model_name = self._resolve_model_name(model)
         temperature_effective = (
             temperature if temperature is not None else self.default_temperature
         )
@@ -1111,7 +1256,7 @@ class LLMClient:
                 )
                 print(
                     f"[{call_id}] 检测到 {classification.kind}，"
-                    f"切换官方 DeepSeek profile: {fallback_profile}"
+                    f"切换 fallback profile: {fallback_profile}"
                 )
                 try:
                     fallback_client = self._build_fallback_client(fallback_profile)

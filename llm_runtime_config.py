@@ -45,6 +45,8 @@ class LLMRuntimeConfig:
     reasoning_effort: Optional[str] = None
     backend: str = "native"
     vision: bool = False
+    force_stream: bool = False
+    model_aliases: Optional[Dict[str, str]] = None
     source: str = "runtime"
 
     def to_legacy_dict(self) -> Dict[str, Any]:
@@ -270,6 +272,21 @@ def resolve_runtime_config(
     else:
         resolved_vision = bool(profile.get("vision", False))
 
+    resolved_force_stream_raw = _env_first([profile.get("force_stream_env"), f"{env_prefix}_FORCE_STREAM"])
+    if resolved_force_stream_raw is not None:
+        resolved_force_stream = str(resolved_force_stream_raw).strip().lower() in {"1", "true", "yes", "on"}
+    else:
+        resolved_force_stream = bool(profile.get("force_stream", False))
+
+    resolved_model_aliases = profile.get("model_aliases")
+    if resolved_model_aliases is not None:
+        if not isinstance(resolved_model_aliases, dict):
+            raise ValueError(
+                f"LLM profile '{resolved_name}' 的 model_aliases 必须是 dict，"
+                f"got {type(resolved_model_aliases).__name__}"
+            )
+        resolved_model_aliases = {str(k): str(v) for k, v in resolved_model_aliases.items()}
+
     model_list = profile.get("model_list")
     if model_list is not None:
         if not isinstance(model_list, list) or not model_list:
@@ -300,6 +317,8 @@ def resolve_runtime_config(
         reasoning_effort=str(resolved_reasoning_effort) if resolved_reasoning_effort else None,
         backend=resolved_backend,
         vision=resolved_vision,
+        force_stream=resolved_force_stream,
+        model_aliases=resolved_model_aliases,
         source="runtime",
     )
 

@@ -174,7 +174,7 @@ def create_llm_client(
 
         print(
             f"[{effective_api}] 检测到 {classification.kind}，"
-            f"初始化时切换官方 DeepSeek profile: {fallback_profile}"
+            f"初始化时切换 fallback profile: {fallback_profile}"
         )
         safe_fallback_kwargs = {
             key: value
