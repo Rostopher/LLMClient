@@ -537,3 +537,8 @@ MIT
 ## 🤝 贡献
 
 欢迎提交 Issue 和 Pull Request！
+# Seed ASR2 时长计价（生产门禁关闭）
+
+`asr_duration_pricing.py` 为独立增量：固定 `volc.seedasr.sauc.duration`、1 CNY/小时、版本 `volc-seedasr2-duration-cn-2026-11-06`，区分最大时长预算 cap、音频 metadata 和已确认可计费秒数。官方逐请求舍入及账单 usage 来源未确认，因此正式 `calculate_asr_duration_cost` 输入当前均拒绝；只有显式 local mock 来源可计算合成费用，不允许用布尔标志启生产。原 Chat/TTS 方法不变。
+
+离线测试入口：`python -m pytest <本包>/test_asr_duration_pricing.py <本包>/test_volcengine_pricing.py -q`；不访问供应商，不消耗额度。使用方是相邻 cantonese-translator 的独立账户钱包，产品门禁与操作说明由其 `STREAMING-ASR.md` 维护。
