@@ -12,6 +12,8 @@ import os
 import json
 import time
 import contextvars
+from copy import deepcopy
+from decimal import Decimal
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta, timezone
@@ -25,6 +27,10 @@ class TokenUsage:
     total_tokens: int = 0
     prompt_cache_hit_tokens: int = 0
     prompt_cache_miss_tokens: int = 0
+    # None 表示供应商未提供，不能与真实零用量混淆。
+    audio_tokens: Optional[int] = None
+    audio_cached_tokens: Optional[int] = None
+    raw_usage: Optional[Dict[str, Any]] = None
 
     def __add__(self, other: 'TokenUsage') -> 'TokenUsage':
         return TokenUsage(
@@ -33,6 +39,10 @@ class TokenUsage:
             total_tokens=self.total_tokens + other.total_tokens,
             prompt_cache_hit_tokens=self.prompt_cache_hit_tokens + other.prompt_cache_hit_tokens,
             prompt_cache_miss_tokens=self.prompt_cache_miss_tokens + other.prompt_cache_miss_tokens,
+            audio_tokens=(self.audio_tokens + other.audio_tokens
+                          if self.audio_tokens is not None and other.audio_tokens is not None else None),
+            audio_cached_tokens=(self.audio_cached_tokens + other.audio_cached_tokens
+                                 if self.audio_cached_tokens is not None and other.audio_cached_tokens is not None else None),
         )
 
 
@@ -49,6 +59,19 @@ class ModelPricing:
     # 高峰时段（北京时间工作日 9:00-12:00、14:00-18:00）三项单价统一乘以该系数；
     # 1.0 表示该模型无峰谷价差
     peak_multiplier: float = 1.0
+    audio_input_price_per_million: Optional[float] = None
+    audio_cache_hit_price_per_million: Optional[float] = None
+    price_version: Optional[str] = None
+
+
+_ARK_PROVIDERS = frozenset({"volcengine", "volcengine_ark", "ark", "doubao"})
+_VOLC_PRICE_VERSION = "volc-public-cn-2026-11-04"
+
+
+def _usage_count(value: Any, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"Missing or invalid supplier usage: {name}")
+    return value
 
 
 _BEIJING_TZ = timezone(timedelta(hours=8))
@@ -199,6 +222,17 @@ class ModelPricingConfig:
             #     currency="USD",
             # ),
         }
+        # 官方常规在线价，0–1024K 输入；仅精确版本，不用于 Batch/低优/低延迟。
+        # https://docs.volcengine.com/docs/ark/model-pricing?lang=zh
+        ark_lite = ModelPricing(
+            model_name="doubao-seed-2-1-lite-260915",
+            input_price_per_million=0.8, output_price_per_million=2.7,
+            cache_hit_input_price_per_million=0.16, currency="CNY",
+            audio_input_price_per_million=12.0,
+            audio_cache_hit_price_per_million=2.4, price_version=_VOLC_PRICE_VERSION,
+        )
+        for provider in _ARK_PROVIDERS:
+            self.provider_model_configs[(provider, ark_lite.model_name)] = ark_lite
     
     def get_model_config(self, model_name: str, provider: Optional[str] = None) -> ModelPricing:
         """优先获取供应商级模型配置，否则回退到通用模型配置。"""
@@ -206,6 +240,8 @@ class ModelPricingConfig:
         provider_config = self.provider_model_configs.get((provider_key, model_name))
         if provider_config is not None:
             return provider_config
+        if provider_key in _ARK_PROVIDERS:
+            raise ValueError(f"No verified Volcengine price for model: {model_name}")
         return self.model_configs.get(model_name, self.model_configs["default"])
     
     def add_model_config(self, config: ModelPricing):
@@ -217,7 +253,10 @@ class ModelPricingConfig:
                       model_name: str,
                       provider: str = "unknown",
                       group_discount: float = 1.0,
-                      at: Optional[datetime] = None) -> Dict[str, float]:
+                      at: Optional[datetime] = None,
+                      *, service_tier: str = "default",
+                      input_modality: str = "text",
+                      cache_mode: str = "implicit") -> Dict[str, Any]:
         """
         计算成本（支持多供应商）
 
@@ -228,6 +267,9 @@ class ModelPricingConfig:
         9:00-12:00、14:00-18:00）三项单价乘以该系数；at 缺省取调用时刻。
         """
         config = self.get_model_config(model_name, provider=provider)
+        if provider.lower() in _ARK_PROVIDERS:
+            return self._calculate_ark_cost(usage, config, provider, service_tier,
+                                            input_modality, cache_mode)
 
         peak_applied = config.peak_multiplier != 1.0 and is_deepseek_peak_hour(at)
         price_factor = config.peak_multiplier if peak_applied else 1.0
@@ -281,6 +323,81 @@ class ModelPricingConfig:
 
         return result
 
+    @staticmethod
+    def _calculate_ark_cost(usage: TokenUsage, config: ModelPricing, provider: str,
+                            service_tier: str, input_modality: str,
+                            cache_mode: str) -> Dict[str, Any]:
+        """按供应商原始用量分解模态；失败显式抛错，不返回猜测的零成本。"""
+        if service_tier != "default":
+            raise ValueError(f"Unverified Volcengine service tier: {service_tier}")
+        if input_modality not in {"text", "audio"} or cache_mode not in {"implicit", "explicit"}:
+            raise ValueError("Unsupported input modality or cache mode")
+        raw = usage.raw_usage
+        if not isinstance(raw, dict):
+            raise ValueError("Volcengine pricing requires original supplier usage")
+        prompt = _usage_count(raw.get("prompt_tokens"), "prompt_tokens")
+        output = _usage_count(raw.get("completion_tokens"), "completion_tokens")
+        if prompt > 1_024_000:
+            raise ValueError("Input exceeds the verified pricing context range")
+        details = raw.get("prompt_tokens_details")
+        if not isinstance(details, dict):
+            raise ValueError("Invalid prompt_tokens_details")
+        audio = _usage_count(details.get("audio_tokens", 0 if input_modality == "text" else None),
+                             "audio_tokens")
+        if input_modality == "text" and audio:
+            raise ValueError("Audio usage requires input_modality='audio'")
+        cached = _usage_count(details.get("cached_tokens"), "cached_tokens")
+        # 文档：隐式模式仅命中音频缓存时返回该字段；显式模式无此保证。
+        if cache_mode == "explicit" and audio and cached and "audio_cached_tokens" not in details:
+            raise ValueError("Explicit audio cache has no billable modality breakdown")
+        audio_cached = _usage_count(details.get("audio_cached_tokens", 0), "audio_cached_tokens")
+        text_cached = cached - audio_cached
+        text_miss = prompt - audio - text_cached
+        if not (audio <= prompt and cached <= prompt and
+                0 <= audio_cached <= min(audio, cached) and text_miss >= 0):
+            raise ValueError("Inconsistent supplier audio/cache usage")
+        if raw.get("total_tokens") is not None:
+            total = _usage_count(raw["total_tokens"], "total_tokens")
+            if total != prompt + output:
+                raise ValueError("Inconsistent total_tokens")
+
+        million = Decimal(1_000_000)
+        price = lambda value: Decimal(str(value))
+        text_cost = (text_miss * price(config.input_price_per_million)
+                     + text_cached * price(config.cache_hit_input_price_per_million)) / million
+        audio_cost = ((audio - audio_cached) * price(config.audio_input_price_per_million)
+                      + audio_cached * price(config.audio_cache_hit_price_per_million)) / million
+        output_cost = output * price(config.output_price_per_million) / million
+        total_cost = text_cost + audio_cost + output_cost
+        return {
+            "standard_cost": float(total_cost), "primary_cost": float(total_cost),
+            "standard_cost_exact": format(total_cost, "f"),
+            "primary_cost_exact": format(total_cost, "f"),
+            "input_cost": float(text_cost + audio_cost), "output_cost": float(output_cost),
+            "text_input_cost": float(text_cost), "audio_input_cost": float(audio_cost),
+            "currency": "CNY", "provider": provider, "model": config.model_name,
+            "price_version": config.price_version, "service_tier": service_tier,
+            "cost_basis": "public_list_price_before_discounts", "peak_pricing_applied": False,
+            "billable_units": {"text_uncached": text_miss, "text_cached": text_cached,
+                               "audio_uncached": audio - audio_cached,
+                               "audio_cached": audio_cached, "output": output},
+        }
+
+    @staticmethod
+    def calculate_speech_cost(usage: Dict[str, Any], resource_id: str) -> Dict[str, Any]:
+        """TTS 2.0 供应商 text_words × 3元/万字符；不计音频分片数。"""
+        if resource_id != "seed-tts-2.0":
+            raise ValueError(f"No verified speech price for resource: {resource_id}")
+        if not isinstance(usage, dict):
+            raise ValueError("Speech pricing requires supplier usage")
+        count = _usage_count(usage.get("text_words"), "text_words")
+        cost = Decimal(count) * Decimal("0.0003")
+        return {"standard_cost": float(cost), "primary_cost": float(cost), "currency": "CNY",
+                "standard_cost_exact": format(cost, "f"), "primary_cost_exact": format(cost, "f"),
+                "provider": "volcengine_speech", "resource_id": resource_id,
+                "billed_characters": count, "price_version": _VOLC_PRICE_VERSION,
+                "cost_basis": "public_list_price_before_discounts"}
+
 
 class TokenUsageTracker:
     """Token使用量追踪器和调用日志记录器"""
@@ -296,7 +413,8 @@ class TokenUsageTracker:
         self.pricing_config = ModelPricingConfig()
         
         # 会话统计
-        self.session_usage = TokenUsage()
+        # 空累计器以零开始；真实记录的缺失 None 仍按 __add__ 传播。
+        self.session_usage = TokenUsage(audio_tokens=0, audio_cached_tokens=0)
         self.session_cost = 0.0
         self.session_records = []
         self.call_count = 0
@@ -324,7 +442,9 @@ class TokenUsageTracker:
         if hasattr(response, 'usage'):
             usage_obj = response.usage
             if hasattr(usage_obj, 'model_dump'):
-                usage_dict = usage_obj.model_dump()
+                # SDK 会给未返回的可选字段补 None；只保留供应商实际提供的字段。
+                usage_dict = (usage_obj.model_dump(exclude_unset=True)
+                              if hasattr(usage_obj, "model_fields_set") else usage_obj.model_dump())
             elif hasattr(usage_obj, 'dict'):
                 usage_dict = usage_obj.dict()
             elif isinstance(usage_obj, dict):
@@ -370,6 +490,11 @@ class TokenUsageTracker:
             total_tokens=int(total_tokens or 0),
             prompt_cache_hit_tokens=int(prompt_cache_hit_tokens),
             prompt_cache_miss_tokens=int(prompt_cache_miss_tokens),
+            audio_tokens=(prompt_details.get("audio_tokens") if isinstance(prompt_details, dict)
+                          else getattr(prompt_details, "audio_tokens", None)),
+            audio_cached_tokens=(prompt_details.get("audio_cached_tokens") if isinstance(prompt_details, dict)
+                                 else getattr(prompt_details, "audio_cached_tokens", None)),
+            raw_usage=deepcopy(usage_dict) if usage_dict else None,
         )
     
     def log_call_record(self, record: Dict[str, Any]):
@@ -440,7 +565,7 @@ class TokenUsageTracker:
     
     def reset_session(self):
         """重置会话统计"""
-        self.session_usage = TokenUsage()
+        self.session_usage = TokenUsage(audio_tokens=0, audio_cached_tokens=0)
         self.session_cost = 0.0
         self.session_records = []
         self.call_count = 0

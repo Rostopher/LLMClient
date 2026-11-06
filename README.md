@@ -2,6 +2,74 @@
 
 一个遵循 Python 最佳实践的、工程化的 LLM 调用客户端，支持多供应商、完整日志追踪、成本计算和结构化数据提取。
 
+## 豆包计量与独立计价
+
+Python 可以直接 `from LLMClient import TokenUsageTracker, ModelPricingConfig`。Node/TypeScript
+不能直接 import Python 包；可保存供应商原始 usage，交给 Python 账户服务或离线脚本计算，
+不需要复制价格公式或迁移模型请求。计价函数本身不访问网络。
+
+```python
+from LLMClient import TokenUsageTracker, ModelPricingConfig
+
+pricing = ModelPricingConfig()
+usage = TokenUsageTracker.extract_usage_from_response(response_json)
+cost = pricing.calculate_cost(
+    usage,
+    model_name=response_json["model"],
+    provider="volcengine",  # 必须明确官方供应商，不能混用第三方/默认价
+    input_modality="audio",  # 纯文本用 text；音频输入要求 audio_tokens 实际存在
+    service_tier=response_json.get("service_tier", "default"),
+    cache_mode="implicit",
+)
+speech_cost = pricing.calculate_speech_cost({"text_words": 18}, "seed-tts-2.0")
+```
+
+新增 `audio_tokens`、`audio_cached_tokens` 和 `raw_usage`；缺失与零分别保存。
+音频和缓存是总输入的子集，分别计价，不能叠加重复收费。
+当前已核价版本为 `doubao-seed-2-1-lite-260915` 常规在线、0–1024K 输入档位，币种 CNY；
+未知官方模型、非 default tier、不完整或矛盾的计量会抛 `ValueError`，不回退默认美元价格。
+官方精确计价要求原始 `prompt_tokens_details` 为对象且实际包含合法的 `cached_tokens`；
+缺明细、空对象或字段缺失不能当作零缓存命中。纯文本请求缺少 `audio_tokens` 可按无音频计价。
+官方隐式缓存只在命中音频缓存时返回 `audio_cached_tokens`，缺省按未命中处理；
+显式音频缓存缺少细分时拒绝精确计价。显式缓存存储费不包含在单请求推理成本中。
+会话音频计数从零累计；某次记录真实缺失的音频字段仍保留 None，并使对应累计字段为未知，
+直到 `reset_session()` 开始新会话，不把缺失上报当作零用量。
+
+TTS 2.0 按供应商 `usage.text_words` 计字符，先加请求头
+`X-Control-Require-Usage-Tokens-Return: *`；流中累计统计不重复相加。
+`price_version=volc-public-cn-2026-11-04` 是查价快照日期；`primary_cost` 是优惠/免费额度抵扣前的
+公开价成本，不是供应商现金账单。当前 `get_session_summary()` 是旧会话汇总接口，
+其 currency 默认值不能用于跨币种财务汇总；本次集成使用每条 cost 的币种与金额。
+
+上述官方豆包 Chat 与 TTS 计价结果统一新增 `primary_cost_exact`、`standard_cost_exact`，
+均从现有 Decimal 计算结果直接导出为不使用科学计数法的十进制字符串，单位沿用 `currency`
+（当前为 CNY 元），不预先舍入或固定小数位数。原 `primary_cost`、`standard_cost` 保持 float。
+账户侧应将精确字符串转为 Decimal，按操作累计成本后乘积分系数，再向上取整一次；
+识别和翻译合计取整，朗读操作单独取整。不要先转 float，也不要逐次调用先取整后相加：
+
+```python
+from decimal import Decimal, ROUND_CEILING
+
+operation_costs = [cost]  # 同一操作的成功调用成本；加入识别/翻译的各次 cost
+total = sum((Decimal(item["primary_cost_exact"]) for item in operation_costs), Decimal(0))
+points = (total * Decimal("300")).to_integral_value(rounding=ROUND_CEILING)
+# 300 仅为产品可配置的本地初值；计价函数本身不决定积分或执行扣费。
+```
+
+本次集成复用计量/计价函数，音频和文字请求仍由粤来粤懂现有 Node 函数发送；
+未改变 `llm_apis.yaml`、默认供应商或已有调用重试策略。
+
+正式回归（不访问外网）：
+
+```sh
+python -m pytest test_volcengine_pricing.py _test_opencode_go_pricing.py _test_runtime_config.py _test_llm_fallback.py -q
+```
+
+覆盖模态/缓存拆分、原始 usage 保存、Chat/TTS 精确金额与旧 float 兼容、累计成本取整临界值、
+TTS 计价、缺失与非法计量拒绝，以及旧 DeepSeek 与
+配置/fallback 行为。真实调用对照入口见 `../cantonese-translator/scripts/probe_doubao_usage.ts`
+和 `probe_price_usage.py`；它们是有费用、需明确运行的探针，不加入默认测试。
+
 ## ✨ 核心特性
 
 ### 1. **基础 LLM 调用 (`LLMClient`)**
