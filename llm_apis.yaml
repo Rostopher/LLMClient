@@ -120,7 +120,7 @@ apis:
     protocol: openai_chat
     base_url: https://api.deepseek.com
     api_key_env: DEEPSEEK_API_KEY
-    default_model: deepseek-v4-flash
+    default_model: deepseek-flash
     temperature: 0.7
     max_retries: 5
     retry_base_delay: 1
@@ -208,39 +208,39 @@ apis:
 stage_routing:
   metadata_extraction:
     api: deepseek_official_flash
-    model: deepseek-v4-flash
+    model: deepseek-flash
     temperature: 0
   attribute_tree:
     api: deepseek_official_flash
-    model: deepseek-v4-flash
+    model: deepseek-flash
     temperature: 0.7
   section_detection:
     api: deepseek_official_flash
-    model: deepseek-v4-flash
+    model: deepseek-flash
     temperature: 0
   paper_structure:
     api: deepseek_official_flash
-    model: deepseek-v4-flash
+    model: deepseek-flash
     temperature: 0
   summary_report_generation:
     api: deepseek_official_flash
-    model: deepseek-v4-flash
+    model: deepseek-flash
     temperature: 0.7
   share_card_summary:
     api: deepseek_official_flash
-    model: deepseek-v4-flash
+    model: deepseek-flash
     temperature: 0.3
   deep_report_generation:
     api: deepseek_official_flash
-    model: deepseek-v4-flash
+    model: deepseek-flash
     temperature: 0.7
   translation:
     api: deepseek_official_flash
-    model: deepseek-v4-flash
+    model: deepseek-flash
     temperature: 0.3
   translation_glossary:
     api: deepseek_official_flash
-    model: deepseek-v4-flash
+    model: deepseek-flash
     temperature: 0.3
   chat_interaction:
     api: deepseek_official_flash_vision
